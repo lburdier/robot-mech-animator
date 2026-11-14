@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "robot_mech_animator"
-version = "1.1.0"
+version = "1.2.0"
 name = "Robot Mech Animator"
 tagline = "Mech locomotion, PS4/keyboard pilot, navmesh AI and weapon FX"
 maintainer = "lburdier"
@@ -10,6 +10,10 @@ website = "https://github.com/lburdier/robot-mech-animator"
 tags = ["Animation", "Rigging"]
 blender_version_min = "5.0.0"
 license = ["SPDX:GPL-3.0-or-later"]
+
+[permissions]
+network = "Check GitHub releases for add-on updates"
+files = "Download and install add-on updates"
 
 [build]
 paths_exclude_pattern = ["__pycache__/", "*.pyc", ".*"]

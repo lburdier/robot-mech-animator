@@ -30,6 +30,23 @@ Extension Blender (5.0 et plus) pour animer un robot mech bipède armé de deux 
 2. Dans Blender, ouvrez **Édition › Préférences › Get Extensions**, puis le menu **⌄** en haut à droite, et choisissez **Install from Disk…**.
 3. Sélectionnez le zip. L'onglet **Robot** apparaît dans la barre latérale de la vue 3D (touche `N`).
 
+### Mises à jour automatiques (depuis la 1.2.0)
+
+L'addon vérifie lui-même s'il existe une nouvelle release sur GitHub :
+
+- au démarrage de Blender, au plus une fois toutes les 24 h (réglable) ;
+- quand une version est disponible, un bloc **Mise à jour disponible** apparaît en haut de l'onglet **Robot**, avec **Installer**, **Notes** et **Ignorer** ;
+- l'option **Installer automatiquement** télécharge et installe la nouvelle version sans rien demander ;
+- avant l'installation, le zip est contrôlé : taille, empreinte SHA-256 publiée par GitHub, identifiant et version de l'extension.
+
+Les réglages se trouvent dans **Préférences › Extensions › Robot Mech Animator**, avec un bouton **Vérifier**. L'addon ne se connecte que si **Préférences › Système › Réseau › Autoriser l'accès en ligne** est activé.
+
+Autre méthode, entièrement gérée par Blender : dans **Préférences › Get Extensions › Repositories**, cliquez **+ › Add Remote Repository** et indiquez l'URL suivante, puis installez l'addon depuis ce dépôt :
+
+```
+https://github.com/lburdier/robot-mech-animator/releases/latest/download/index.json
+```
+
 ## Construire le rig
 
 ```bash
@@ -125,6 +142,8 @@ Panneau **Chemin et IA** :
 
 ```bash
 blender -b --factory-startup --disable-autoexec Robot_Rig.blend --python tests/test_addon.py
+# mise à jour de bout en bout dans un profil vierge (ancien zip, puis zip plus récent)
+BLENDER_USER_RESOURCES=/tmp/profil blender -b --factory-startup --online-mode     --python tests/test_updater.py -- ancien.zip nouveau.zip
 ```
 
 Les 116 vérifications couvrent :

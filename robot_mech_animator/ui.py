@@ -5,6 +5,7 @@ import bpy
 from bpy.types import Panel
 
 from . import rig as R
+from . import updater
 from .pilot import STATUS
 
 
@@ -27,6 +28,7 @@ class ROBOT_PT_main(_Base, Panel):
 
     def draw(self, context):
         lay = self.layout
+        updater.draw_box(lay, compact=True)
         s = context.scene.robot_anim
         lay.prop(s, "rig")
         rig = _rig_or_warn(lay, context)
