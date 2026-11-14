@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.blend
+*.blend1
+build/
+dist/
+tools/renders/
+tools/*_out.txt
+tools/inspect_*.py
+tools/probe_api.py
+tools/render_closeups.py
+tools/render_knee.py

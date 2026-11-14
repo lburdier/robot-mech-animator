@@ -1,0 +1,15 @@
+schema_version = "1.0.0"
+
+id = "robot_mech_animator"
+version = "1.0.0"
+name = "Robot Mech Animator"
+tagline = "Walk cycle, turret presets and PS4 gamepad piloting for a mech"
+maintainer = "lburdier"
+type = "add-on"
+website = "https://github.com/lburdier/robot-mech-animator"
+tags = ["Animation", "Rigging"]
+blender_version_min = "5.0.0"
+license = ["SPDX:GPL-3.0-or-later"]
+
+[build]
+paths_exclude_pattern = ["__pycache__/", "*.pyc", ".*"]
