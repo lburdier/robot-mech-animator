@@ -5,7 +5,7 @@ import bpy
 from bpy.types import Panel
 
 from . import rig as R
-from . import updater
+from . import autopilot, history, updater
 from .pilot import STATUS
 
 
@@ -23,12 +23,24 @@ def _rig_or_warn(layout, context):
     return rig
 
 
+def _cancel_box(lay):
+    """Running bake (progress + cancel) and « undo last action » button."""
+    if autopilot.BAKE["running"]:
+        box = lay.box()
+        box.label(text=f"{autopilot.BAKE['label']} : {autopilot.BAKE['progress'] * 100:.0f} %", icon='SORTTIME')
+        box.operator("robot.bake_cancel", icon='CANCEL', text="Annuler (Échap)")
+    label = history.last_label()
+    if label and not autopilot.BAKE["running"] and not STATUS["recording"]:
+        lay.operator("robot.undo_last", icon='LOOP_BACK', text=f"Annuler : {label}")
+
+
 class ROBOT_PT_main(_Base, Panel):
     bl_label = "Robot – Rig"
 
     def draw(self, context):
         lay = self.layout
         updater.draw_box(lay, compact=True)
+        _cancel_box(lay)
         s = context.scene.robot_anim
         lay.prop(s, "rig")
         rig = _rig_or_warn(lay, context)
@@ -190,7 +202,13 @@ class ROBOT_PT_pilot(_Base, Panel):
             box.label(text=f"Manette : {STATUS['pad']}")
             if STATUS["recording"]:
                 box.label(text=f"Image {STATUS['frame']} – {STATUS['keys']} poses enregistrées")
-            box.label(text="Croix / R = enregistrer  •  Options / Échap = quitter")
+            box.label(text="Croix / R = enregistrer  •  Share / Suppr = annuler la prise")
+            box.label(text="Options / Échap = quitter")
+            row = box.row(align=True)
+            row.operator("robot.pilot_request", icon='CANCEL', text="Arrêter").action = 'STOP'
+            sub = row.row(align=True)
+            sub.enabled = STATUS["recording"]
+            sub.operator("robot.pilot_request", icon='TRASH', text="Annuler la prise").action = 'CANCEL_TAKE'
         else:
             lay.operator("robot.pilot", icon='PLAY', text="Piloter le robot")
         row = lay.row(align=True)
@@ -247,6 +265,7 @@ class ROBOT_PT_help(_Base, Panel):
         ("Triangle", "tourelle G / D / les deux", "T"),
         ("R3", "recentrer les tourelles", "V"),
         ("Croix", "enregistrer on/off", "R"),
+        ("Share", "annuler la prise en cours", "Suppr"),
         ("Rond", "pose de repos", "Retour arrière"),
         ("Options / PS", "quitter", "Échap"),
     )
@@ -289,6 +308,8 @@ class ROBOT_PT_auto(_Base, Panel):
         sub.prop(s, "path_laps")
         box.prop(s, "path_start_on_path")
         box.operator("robot.path_follow", icon='ANIM')
+        if autopilot.BAKE["running"]:
+            box.operator("robot.bake_cancel", icon='CANCEL', text="Annuler (Échap)")
 
         box = lay.box()
         box.label(text="Navmesh", icon='MOD_TRIANGULATE')
@@ -318,10 +339,13 @@ class ROBOT_PT_auto(_Base, Panel):
         col.prop(s, "ai_scan")
         col.prop(s, "ai_seed")
         box.operator("robot.ai_bake", icon='PLAY')
+        if autopilot.BAKE["running"]:
+            box.operator("robot.bake_cancel", icon='CANCEL', text="Annuler (Échap)")
+        lay.label(text="Échap ou clic droit pendant le calcul : annuler", icon='INFO')
 
 
 class ROBOT_PT_paint(_Base, Panel):
-    bl_label = "Peinture militaire"
+    bl_label = "Peinture et marquages"
     bl_parent_id = "ROBOT_PT_main"
     bl_options = {'DEFAULT_CLOSED'}
 
@@ -332,11 +356,23 @@ class ROBOT_PT_paint(_Base, Panel):
         col = lay.column(align=True)
         col.prop(s, "paint_strength", slider=True)
         col.prop(s, "paint_wear", slider=True)
+        col.prop(s, "paint_grime", slider=True)
         col.prop(s, "paint_scale")
         col.prop(s, "paint_seed")
+        lay.prop(s, "paint_turret_metal")
         row = lay.row(align=True)
         row.operator("robot.military_paint", icon='BRUSH_DATA', text="Appliquer").remove_paint = False
         row.operator("robot.military_paint", icon='X', text="Retirer").remove_paint = True
+        lay.label(text="Visière noire brillante, tiges de vérins chromées", icon='INFO')
+        box = lay.box()
+        box.label(text="Marquages (decals)", icon='TEXTURE')
+        box.prop(s, "decal_set")
+        row = box.row(align=True)
+        row.prop(s, "decal_number")
+        row.prop(s, "decal_wear", slider=True)
+        row = box.row(align=True)
+        row.operator("robot.decals", icon='IMAGE_REFERENCE', text="Poser les marquages").remove = False
+        row.operator("robot.decals", icon='X', text="Retirer").remove = True
 
 
 classes = (ROBOT_PT_main, ROBOT_PT_turrets, ROBOT_PT_walk, ROBOT_PT_pilot, ROBOT_PT_help, ROBOT_PT_auto,

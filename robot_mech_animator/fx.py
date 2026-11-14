@@ -27,6 +27,9 @@ def fx_collection(scene):
         col = bpy.data.collections.new(FX_COLLECTION)
     if col.name not in scene.collection.children and not any(col.name in c.children for c in scene.collection.children_recursive):
         scene.collection.children.link(col)
+    ee = getattr(scene, "eevee", None)
+    if ee is not None and getattr(ee, "volumetric_tile_size", "") in {"8", "16"}:
+        ee.volumetric_tile_size = '4'          # fumée moins pixelisée en EEVEE
     return col
 
 
@@ -602,54 +605,58 @@ def _scene_raycaster(scene, ignore):
     return cast
 
 
-def simulate_rocket(p0, d0, fps, target=None, max_range=120.0, seed=0, raycast=None, ground_z=None):
-    """Rocket flight. Returns (samples[(t, pos, vel, burning)], impact_pos or None, t_end)."""
+def simulate_rocket(p0, d0, fps, target=None, max_range=120.0, seed=0, raycast=None, ground_z=None,
+                    airburst=True):
+    """Rocket flight. Returns (samples[(t, pos, vel, burning)], impact_pos or None, t_end).
+
+    The motor wobble is applied around a guided base heading and does not accumulate,
+    so the rocket stays on its line. Without any hit, ``airburst`` detonates the rocket
+    at the end of its range (self-destruct), so every rocket ends in an explosion."""
     rng = random.Random(seed)
     sub = 4
     dt = 1.0 / (fps * sub)
-    pos, d = Vector(p0), Vector(d0).normalized()
-    vel = d * 14.0
+    pos, base = Vector(p0), Vector(d0).normalized()
+    spd = 16.0
+    vel = base * spd
     t, travelled = 0.0, 0.0
-    eject, vmax, acc = 0.12, 95.0, 220.0
-    wob_a, wob_f = math.radians(rng.uniform(1.5, 3.0)), rng.uniform(5, 9)
+    eject, vmax, acc = 0.10, 75.0, 170.0
+    wob_a, wob_f = math.radians(rng.uniform(1.0, 2.0)), rng.uniform(5, 9)
     phase = rng.uniform(0, math.tau)
     samples = [(0.0, pos.copy(), vel.copy(), False)]
     impact = None
-    while travelled < max_range and t < 6.0:
+    drop = 0.0                                  # vertical speed gained while ejected (position only)
+    while travelled < max_range and t < 8.0:
         t += dt
         burning = t > eject
-        spd = vel.length
         if burning:
             spd = min(vmax, spd + acc * dt)
-        heading = vel.normalized()
-        if target is not None and burning:
-            want = (Vector(target) - pos).normalized()
-            ang = heading.angle(want, 0.0)
-            maxturn = math.radians(110.0) * dt
-            if ang > 1e-5:
-                k = min(1.0, maxturn / ang)
-                heading = heading.lerp(want, k).normalized()
-        # small decaying wobble of the motor
-        side = heading.cross(Vector((0, 0, 1)))
+            if target is not None:
+                want = (Vector(target) - pos).normalized()
+                ang = base.angle(want, 0.0)
+                maxturn = math.radians(110.0) * dt
+                if ang > 1e-5:
+                    base = base.lerp(want, min(1.0, maxturn / ang)).normalized()
+        else:                                   # ejection: slight drop before the motor lights
+            drop -= 9.81 * dt
+        side = base.cross(Vector((0, 0, 1)))
         if side.length < 1e-4:
             side = Vector((1, 0, 0))
         side.normalize()
-        up = side.cross(heading).normalized()
-        w = wob_a * math.exp(-t * 1.5)
-        heading = (heading + side * w * math.sin(wob_f * t + phase) * 0.15 + up * w * math.cos(wob_f * 1.3 * t) * 0.15).normalized()
+        up = side.cross(base).normalized()
+        w = wob_a * math.exp(-t * 1.2)
+        heading = (base + side * w * math.sin(wob_f * t + phase) + up * w * math.cos(wob_f * 1.3 * t)).normalized()
         vel = heading * spd
-        if not burning:
-            vel.z -= 9.81 * dt
-        step = vel * dt
+        step = vel * dt + Vector((0, 0, drop * dt))
         if raycast is not None and step.length > 0:
             hit = raycast(pos, step.normalized(), step.length)
             if hit is not None:
-                impact = hit
-                pos = Vector(hit)
+                impact = Vector(hit)
+                pos = impact.copy()
                 samples.append((t, pos.copy(), vel.copy(), burning))
                 break
         if ground_z is not None and pos.z + step.z < ground_z:
-            impact = Vector((pos.x + step.x, pos.y + step.y, ground_z))
+            k = (pos.z - ground_z) / max(-step.z, 1e-9)
+            impact = Vector((pos.x + step.x * k, pos.y + step.y * k, ground_z))
             pos = impact.copy()
             samples.append((t, pos.copy(), vel.copy(), burning))
             break
@@ -658,20 +665,22 @@ def simulate_rocket(p0, d0, fps, target=None, max_range=120.0, seed=0, raycast=N
         samples.append((t, pos.copy(), vel.copy(), burning))
     if impact is None and target is not None and (pos - Vector(target)).length < 3.0:
         impact = pos.copy()
+    if impact is None and airburst:
+        impact = pos.copy()
     return samples, impact, t
 
 
-def _smoke_object(name, scene, points):
-    """points: list of dicts with co, birth, life, vel, r0, grow, rise, drag, heat, dark, seed."""
+def _smoke_object(name, scene, points, frame=0.0):
+    """points: dicts with co, birth (s from launch), life (s), vel, r0, grow, rise, drag, heat, dark, seed.
+
+    Births are stored in scene seconds (``frame / fps + birth``), the time base of the node group."""
     fps = scene.render.fps / scene.render.fps_base
-    for p in points:                       # the node group works in seconds (scene time)
-        p["birth"] = p["birth"] / fps
-        p["life"] = p["life"] / fps
+    t0 = frame / fps
     me = bpy.data.meshes.new(name)
     me.from_pydata([p["co"] for p in points], [], [])
     for key in ("birth", "life", "r0", "grow", "rise", "drag", "heat", "htime", "dark", "seed"):
         a = me.attributes.new(key, 'FLOAT', 'POINT')
-        a.data.foreach_set("value", [float(p[key]) for p in points])
+        a.data.foreach_set("value", [float(p[key]) + (t0 if key == "birth" else 0.0) for p in points])
     a = me.attributes.new("vel", 'FLOAT_VECTOR', 'POINT')
     a.data.foreach_set("vector", [c for p in points for c in p["vel"]])
     obj = bpy.data.objects.new(name, me)
@@ -682,66 +691,37 @@ def _smoke_object(name, scene, points):
     return obj
 
 
-def launch_rocket(scene, rig, side, port, frame, direction=None, origin=None, target=None,
-                  max_range=120.0, seed=0, smoke_density=1.0, explosion=True):
-    """Create one rocket fired at ``frame`` from ``rocket_port_<port>.<side>``.
+def rig_ground_z(rig):
+    """World height of the robot's soles (root bone), used as an infinite ground."""
+    try:
+        return (rig.matrix_world @ rig.pose.bones["root"].head).z
+    except (KeyError, AttributeError):
+        return rig.matrix_world.translation.z
 
-    Returns a dict with the created objects and the impact frame."""
+
+BLAST_STEPS = ((0.3, 1.5), (1.6, 1.3), (2.6, 0.9), (3.2, 0.45), (3.5, 0.15), (3.6, 0.0))   # every 2 frames
+BLAST_LIGHT = ((-1, 0.0), (0, 60000.0), (3, 25000.0), (10, 0.0))                           # (frame offset, W)
+
+
+def plan_rocket(scene, rig, side, port, direction=None, origin=None, target=None, max_range=120.0, seed=0,
+                smoke_density=1.0, explosion=True, salt=0):
+    """Compute one rocket (flight, impact, smoke puffs) without creating anything.
+
+    Times are in seconds from the launch."""
     fps = scene.render.fps / scene.render.fps_base
     if origin is None or direction is None:
         pose = R.RigPose(rig)
         o, d = pose.bone_world(R.rocket_port(side, port))
         origin = origin or o
         direction = direction or d
-    rng = random.Random(seed * 7919 + frame * 31 + port + (0 if side == "L" else 17))
+    rng = random.Random(seed * 7919 + salt * 31 + port + (0 if side == "L" else 17))
     ignore = {o.name for o in bpy.data.objects if o.parent == rig} | {rig.name}
     raycast = _scene_raycaster(scene, ignore)
     samples, impact, t_end = simulate_rocket(origin, direction, fps, target=target, max_range=max_range,
-                                             seed=rng.randrange(1 << 30), raycast=raycast, ground_z=None)
-    tag = f"{side}{port}_{frame:05d}_{seed}"
-    rocket = bpy.data.objects.new(f"FX-roquette.{tag}", _rocket_mesh())
-    _link(rocket, scene)
-    rocket.rotation_mode = 'QUATERNION'
-    flame = bpy.data.objects.new(f"FX-flamme.{tag}", _flame_mesh())
-    _link(flame, scene)
-    flame.parent = rocket
-    flame.location = (0, -0.43, 0)
-    flame.visible_shadow = False
-    ld = bpy.data.lights.new(f"FX-moteur.{tag}", 'POINT')
-    ld.color = (1.0, 0.55, 0.2)
-    ld.shadow_soft_size = 0.3
-    light = bpy.data.objects.new(ld.name, ld)
-    _link(light, scene)
-    light.parent = rocket
-    light.location = (0, -0.8, 0)
-
-    # one key per frame
-    f_end = frame + max(1, int(math.ceil(t_end * fps)))
-    by_frame = {}
-    for t, pos, vel, burning in samples:
-        by_frame[frame + int(round(t * fps))] = (pos, vel, burning)
-    last = None
-    for f in range(frame, f_end + 1):
-        if f in by_frame:
-            last = by_frame[f]
-        if last is None:
-            continue
-        pos, vel, burning = last
-        rocket.location = pos
-        rocket.rotation_quaternion = vel.to_track_quat('Y', 'Z')
-        _key(rocket, "location", f)
-        _key(rocket, "rotation_quaternion", f)
-        s = rng.uniform(0.8, 1.35) if burning else 0.0
-        flame.scale = (s * rng.uniform(0.85, 1.1), s * rng.uniform(1.0, 1.6), s * rng.uniform(0.85, 1.1))
-        _key(flame, "scale", f, constant=True)
-        ld.energy = rng.uniform(1500, 2600) if burning else 0.0
-        ld.keyframe_insert("energy", frame=f)
-    set_constant(ld)
-    _key_visibility(rocket, frame, f_end)
-    _key_visibility(flame, frame, f_end)
-    _key_visibility(light, frame, f_end)
-
-    # ---- smoke points along the trail
+                                             seed=rng.randrange(1 << 30), raycast=raycast,
+                                             ground_z=rig_ground_z(rig), airburst=explosion)
+    if not explosion:
+        impact = None
     pts = []
     spacing = 0.32 / max(smoke_density, 0.1)          # one puff every ~30 cm of flight
     acc_d, prev = 0.0, None
@@ -760,10 +740,11 @@ def launch_rocket(scene, rig, side, port, frame, direction=None, origin=None, ta
                 back = vel.normalized() * -0.5
                 spread = Vector((rng.gauss(0, 0.22), rng.gauss(0, 0.22), rng.gauss(0, 0.22)))
                 young = tq < 0.5
-                pts.append(dict(co=tuple(q + back + Vector((rng.gauss(0, 0.03), rng.gauss(0, 0.03), rng.gauss(0, 0.03)))),
-                                birth=frame + tq * fps, life=rng.uniform(90, 150), vel=tuple(vel * -0.025 + spread),
-                                r0=rng.uniform(0.16, 0.24), grow=rng.uniform(0.45, 0.75), rise=rng.uniform(0.12, 0.3),
-                                drag=1.6, heat=0.9 if young else 0.6, htime=0.06, dark=rng.uniform(0.0, 0.08),
+                jitter = Vector((rng.gauss(0, 0.03), rng.gauss(0, 0.03), rng.gauss(0, 0.03)))
+                pts.append(dict(co=tuple(q + back + jitter), birth=tq, life=rng.uniform(90, 150) / fps,
+                                vel=tuple(vel * -0.025 + spread), r0=rng.uniform(0.16, 0.24),
+                                grow=rng.uniform(0.45, 0.75), rise=rng.uniform(0.12, 0.3), drag=1.6,
+                                heat=0.9 if young else 0.6, htime=0.06, dark=rng.uniform(0.0, 0.08),
                                 seed=rng.uniform(0, 100)))
             acc_d += L
         prev = (t, pos)
@@ -771,44 +752,191 @@ def launch_rocket(scene, rig, side, port, frame, direction=None, origin=None, ta
     d0 = Vector(direction).normalized()
     for _ in range(int(22 * smoke_density) + 4):            # launch blast / backblast
         v = -d0 * rng.uniform(2.0, 7.0) + Vector((rng.gauss(0, 1.4), rng.gauss(0, 1.4), rng.gauss(0, 1.0)))
-        pts.append(dict(co=tuple(p0 - d0 * 0.3), birth=frame + rng.uniform(0, 3), life=rng.uniform(60, 110), vel=tuple(v),
-                        r0=rng.uniform(0.15, 0.25), grow=rng.uniform(0.6, 0.9), rise=0.35, drag=2.2, heat=0.8, htime=0.15,
-                        dark=rng.uniform(0.05, 0.25), seed=rng.uniform(0, 100)))
-    created = {"rocket": rocket, "flame": flame, "light": light, "impact_frame": f_end, "impact": impact}
-
-    # ---- explosion
-    if explosion and impact is not None:
-        fi = f_end
-        blast = bpy.data.objects.new(f"FX-explosion.{tag}", _blast_mesh())
-        _link(blast, scene)
-        blast.location = impact
-        blast.visible_shadow = False
-        for i, (sc, a) in enumerate(((0.3, 1.5), (1.6, 1.3), (2.6, 0.9), (3.2, 0.45), (3.5, 0.15), (3.6, 0.0))):
-            blast.scale = (sc, sc, sc * 0.85)
-            blast.color = (1, 1, 1, a)
-            _key(blast, "scale", fi + i * 2)
-            _key(blast, "color", fi + i * 2)
-        _key_visibility(blast, fi, fi + 12)
-        bl = bpy.data.lights.new(f"FX-eclair.{tag}", 'POINT')
-        bl.color = (1.0, 0.6, 0.25)
-        bl.shadow_soft_size = 1.5
-        blo = bpy.data.objects.new(bl.name, bl)
-        _link(blo, scene)
-        blo.location = Vector(impact) + Vector((0, 0, 1.0))
-        for f, e in ((fi - 1, 0.0), (fi, 60000.0), (fi + 3, 25000.0), (fi + 10, 0.0)):
-            bl.energy = e
-            bl.keyframe_insert("energy", frame=f)
-        n_burst = int(70 * smoke_density) + 10
-        for _ in range(n_burst):
+        pts.append(dict(co=tuple(p0 - d0 * 0.3), birth=rng.uniform(0, 3) / fps, life=rng.uniform(60, 110) / fps,
+                        vel=tuple(v), r0=rng.uniform(0.15, 0.25), grow=rng.uniform(0.6, 0.9), rise=0.35, drag=2.2,
+                        heat=0.8, htime=0.15, dark=rng.uniform(0.05, 0.25), seed=rng.uniform(0, 100)))
+    n_frames = max(1, int(math.ceil(t_end * fps)))
+    if impact is not None:
+        ti = n_frames / fps
+        for _ in range(int(70 * smoke_density) + 10):
             dirv = Vector((rng.gauss(0, 1), rng.gauss(0, 1), abs(rng.gauss(0, 1)) * 0.8 + 0.2)).normalized()
-            pts.append(dict(co=tuple(Vector(impact) + dirv * rng.uniform(0.1, 0.6)), birth=fi + rng.uniform(0, 4),
-                            life=rng.uniform(140, 230), vel=tuple(dirv * rng.uniform(3, 9)), r0=rng.uniform(0.35, 0.6),
+            pts.append(dict(co=tuple(Vector(impact) + dirv * rng.uniform(0.1, 0.6)),
+                            birth=ti + rng.uniform(0, 4) / fps, life=rng.uniform(140, 230) / fps,
+                            vel=tuple(dirv * rng.uniform(3, 9)), r0=rng.uniform(0.35, 0.6),
                             grow=rng.uniform(1.0, 1.6), rise=rng.uniform(0.6, 1.1), drag=2.8, heat=1.0, htime=0.6,
                             dark=rng.uniform(0.55, 0.85), seed=rng.uniform(0, 100)))
+    # per-frame track: (frame offset, pos, vel, burning, flame scale, motor light W)
+    by_frame = {}
+    for t, pos, vel, burning in samples:
+        by_frame[int(round(t * fps))] = (pos, vel, burning)
+    track, last = [], None
+    for i in range(n_frames + 1):
+        last = by_frame.get(i, last)
+        if last is None:
+            continue
+        pos, vel, burning = last
+        s = rng.uniform(0.8, 1.35) if burning else 0.0
+        flame = (s * rng.uniform(0.85, 1.1), s * rng.uniform(1.0, 1.6), s * rng.uniform(0.85, 1.1))
+        track.append((i, pos.copy(), vel.copy(), burning, flame, rng.uniform(1500, 2600) if burning else 0.0))
+    return {"fps": fps, "side": side, "port": port, "seed": seed, "samples": samples, "track": track,
+            "impact": impact, "n_frames": n_frames, "smoke": pts, "origin": p0, "direction": d0}
+
+
+def _rocket_objects(scene, tag):
+    rocket = bpy.data.objects.new(f"FX-roquette.{tag}", _rocket_mesh())
+    _link(rocket, scene)
+    rocket.rotation_mode = 'QUATERNION'
+    flame = bpy.data.objects.new(f"FX-flamme.{tag}", _flame_mesh())
+    _link(flame, scene)
+    flame.parent = rocket
+    flame.location = (0, -0.43, 0)
+    flame.visible_shadow = False
+    ld = bpy.data.lights.new(f"FX-moteur.{tag}", 'POINT')
+    ld.color = (1.0, 0.55, 0.2)
+    ld.shadow_soft_size = 0.3
+    light = bpy.data.objects.new(ld.name, ld)
+    _link(light, scene)
+    light.parent = rocket
+    light.location = (0, -0.8, 0)
+    return rocket, flame, light
+
+
+def _blast_objects(scene, tag, impact):
+    blast = bpy.data.objects.new(f"FX-explosion.{tag}", _blast_mesh())
+    _link(blast, scene)
+    blast.location = impact
+    blast.visible_shadow = False
+    bl = bpy.data.lights.new(f"FX-eclair.{tag}", 'POINT')
+    bl.color = (1.0, 0.6, 0.25)
+    bl.shadow_soft_size = 1.5
+    blo = bpy.data.objects.new(bl.name, bl)
+    _link(blo, scene)
+    blo.location = Vector(impact) + Vector((0, 0, 1.0))
+    return blast, blo
+
+
+def launch_rocket(scene, rig, side, port, frame, direction=None, origin=None, target=None,
+                  max_range=120.0, seed=0, smoke_density=1.0, explosion=True):
+    """Create one rocket fired at ``frame`` from ``rocket_port_<port>.<side>``, keyframed in the timeline.
+
+    Returns a dict with the created objects and the impact frame."""
+    plan = plan_rocket(scene, rig, side, port, direction, origin, target, max_range, seed, smoke_density,
+                       explosion, salt=frame)
+    tag = f"{side}{port}_{frame:05d}_{seed}"
+    rocket, flame, light = _rocket_objects(scene, tag)
+    ld = light.data
+    for i, pos, vel, burning, fl, energy in plan["track"]:
+        f = frame + i
+        rocket.location = pos
+        rocket.rotation_quaternion = vel.to_track_quat('Y', 'Z')
+        _key(rocket, "location", f)
+        _key(rocket, "rotation_quaternion", f)
+        flame.scale = fl
+        _key(flame, "scale", f, constant=True)
+        ld.energy = energy
+        ld.keyframe_insert("energy", frame=f)
+    set_constant(ld)
+    f_end = frame + plan["n_frames"]
+    _key_visibility(rocket, frame, f_end)
+    _key_visibility(flame, frame, f_end)
+    _key_visibility(light, frame, f_end)
+    impact = plan["impact"]
+    created = {"rocket": rocket, "flame": flame, "light": light, "impact_frame": f_end, "impact": impact}
+    if impact is not None:
+        blast, blo = _blast_objects(scene, tag, impact)
+        for i, (sc, a) in enumerate(BLAST_STEPS):
+            blast.scale = (sc, sc, sc * 0.85)
+            blast.color = (1, 1, 1, a)
+            _key(blast, "scale", f_end + i * 2)
+            _key(blast, "color", f_end + i * 2)
+        _key_visibility(blast, f_end, f_end + 12)
+        for off, e in BLAST_LIGHT:
+            blo.data.energy = e
+            blo.data.keyframe_insert("energy", frame=f_end + off)
         created.update(blast=blast, blast_light=blo)
-    if pts:
-        created["smoke"] = _smoke_object(f"FX-fumee.{tag}", scene, pts)
+    if plan["smoke"]:
+        created["smoke"] = _smoke_object(f"FX-fumee.{tag}", scene, plan["smoke"], frame=frame)
     return created
+
+
+class LiveRocket:
+    """A rocket animated in real time (pilot mode without recording): no keyframes.
+
+    The smoke ages by shifting the birth attribute of its points, so it evolves even
+    though the timeline does not move. ``update(elapsed)`` returns False once finished."""
+    _count = 0
+
+    def __init__(self, scene, plan):
+        LiveRocket._count += 1
+        self.scene, self.plan = scene, plan
+        tag = f"live{LiveRocket._count:04d}"
+        self.rocket, self.flame, self.light = _rocket_objects(scene, tag)
+        self.objs = [self.rocket, self.flame, self.light]
+        self.blast = self.blast_light = None
+        if plan["impact"] is not None:
+            self.blast, self.blast_light = _blast_objects(scene, tag, plan["impact"])
+            self.blast.scale = (0, 0, 0)
+            self.blast_light.data.energy = 0.0
+            self.objs += [self.blast, self.blast_light]
+        self.now = scene.frame_current / plan["fps"]
+        self.smoke = None
+        self.births = []
+        if plan["smoke"]:
+            self.smoke = _smoke_object(f"FX-fumee.{tag}", scene, plan["smoke"], frame=scene.frame_current)
+            self.births = [self.now + p["birth"] for p in plan["smoke"]]
+            self.objs.append(self.smoke)
+        self.duration = max([p["birth"] + p["life"] for p in plan["smoke"]] + [plan["n_frames"] / plan["fps"] + 0.6])
+        for o in self.objs:
+            o["robot_fx_live"] = True
+        self.update(0.0)
+
+    def update(self, elapsed):
+        p = self.plan
+        fi = elapsed * p["fps"]
+        track = p["track"]
+        flying = bool(track) and fi <= p["n_frames"]
+        if flying:
+            k = min(int(fi), len(track) - 1)
+            _i, pos, vel, burning, fl, energy = track[k]
+            if k + 1 < len(track):
+                pos = pos.lerp(track[k + 1][1], fi - int(fi))
+            self.rocket.location = pos
+            self.rocket.rotation_quaternion = vel.to_track_quat('Y', 'Z')
+            self.flame.scale = fl
+            self.light.data.energy = energy
+        for o in (self.rocket, self.flame, self.light):
+            o.hide_viewport = o.hide_render = not flying
+        if self.blast is not None:
+            bf = fi - p["n_frames"]
+            if 0 <= bf < 12:
+                sc, a = BLAST_STEPS[min(int(bf / 2), len(BLAST_STEPS) - 1)]
+                self.blast.scale = (sc, sc, sc * 0.85)
+                self.blast.color = (1, 1, 1, a)
+                self.blast.hide_viewport = self.blast.hide_render = False
+            else:
+                self.blast.hide_viewport = self.blast.hide_render = True
+            e = 0.0
+            for (o0, e0), (o1, e1) in zip(BLAST_LIGHT, BLAST_LIGHT[1:]):
+                if o0 <= bf <= o1:
+                    e = e0 + (e1 - e0) * (bf - o0) / max(o1 - o0, 1e-6)
+            self.blast_light.data.energy = e
+        if self.smoke is not None:
+            self.smoke.data.attributes["birth"].data.foreach_set("value", [b - elapsed for b in self.births])
+            self.smoke.data.update()
+        return elapsed <= self.duration
+
+    def remove(self):
+        for o in self.objs:
+            try:
+                data = o.data
+                bpy.data.objects.remove(o)
+                if isinstance(data, bpy.types.Light) and data.users == 0:
+                    bpy.data.lights.remove(data)
+                elif isinstance(data, bpy.types.Mesh) and data.users == 0 and data.name.startswith("FX-fumee"):
+                    bpy.data.meshes.remove(data)
+            except ReferenceError:
+                pass
+        self.objs = []
 
 
 def clear_fx(scene, after=None):
@@ -816,6 +944,8 @@ def clear_fx(scene, after=None):
     removed = 0
     for o in list(bpy.data.objects):
         if not o.get("robot_fx") or o.name.startswith("FX-flash"):
+            continue
+        if after is not None and o.get("robot_fx_live"):
             continue
         if after is not None:
             try:

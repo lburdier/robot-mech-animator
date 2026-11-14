@@ -13,7 +13,7 @@ from mathutils import Vector
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT_DIR)
 import robot_mech_animator as addon  # noqa: E402
-from robot_mech_animator import (animdata, autopilot, fx, gait, gamepad, locomotion as LM, nav, paint,  # noqa: E402
+from robot_mech_animator import (animdata, autopilot, fx, gait, gamepad, history, locomotion as LM, nav, paint,  # noqa: E402
                                  pilot, rig as R)
 
 RESULTS = []
@@ -534,18 +534,177 @@ def test_military_paint():
     mats = paint.robot_materials(rig)
     check("paint: robot materials found", len(mats) >= 2, str([m.name for m in mats]))
     bsdf = paint._principled(mats[0])
-    src_before = bsdf.inputs["Base Color"].links[0].from_node.name
+    before = {k: (bsdf.inputs[k].links[0].from_socket if bsdf.inputs[k].links else None,
+                  bsdf.inputs[k].default_value if not hasattr(bsdf.inputs[k].default_value, "__len__")
+                  else tuple(bsdf.inputs[k].default_value))
+              for k in ("Base Color", "Metallic", "Roughness", "Coat Weight")}
     for scheme, _l, _d in paint.SCHEME_ITEMS:
         s.paint_scheme = scheme
         res = bpy.ops.robot.military_paint(remove_paint=False)
     linked = bsdf.inputs["Base Color"].links[0].from_node
-    check("paint: applied (camouflage node group)", res == {'FINISHED'} and linked.name == paint.TAG
-          and linked.node_tree.name == paint.GROUP)
-    check("paint: only one paint layer after re-applying", sum(1 for n in mats[0].node_tree.nodes if n.name.startswith(paint.TAG)) == 3)
+    check("paint: PBR group drives colour, metal, roughness, coat",
+          res == {'FINISHED'} and linked.name == paint.TAG and linked.node_tree.name == paint.GROUP
+          and all(bsdf.inputs[k].links and bsdf.inputs[k].links[0].from_node == linked
+                  for k in ("Metallic", "Roughness", "Coat Weight")))
+    check("paint: only one paint node after re-applying",
+          sum(1 for n in mats[0].node_tree.nodes if n.name.startswith(paint.TAG)) == 1)
+    parts = {n: bpy.data.objects[n].get(paint.PART_PROP) for n in ("GEO-turret.L", "GEO-gatling.R", "GEO-piston_rod.L",
+                                                                   "GEO-shoulder.L", "GEO-torso")}
+    check("paint: guns bare metal, piston rods chrome, pods painted",
+          parts == {"GEO-turret.L": 1, "GEO-gatling.R": 1, "GEO-piston_rod.L": 2, "GEO-shoulder.L": 0, "GEO-torso": 0},
+          str(parts))
+    attr = bpy.data.objects["GEO-torso"].data.attributes.get(paint.VISOR_ATTR)
+    n_visor = sum(1 for d in attr.data if d.value > 0.5) if attr else 0
+    check("paint: visor found on the head", 20 < n_visor < 400, f"{n_visor} faces")
+    s.paint_turret_metal = 'ALL'
+    bpy.ops.robot.military_paint()
+    check("paint: whole turrets in metal option", bpy.data.objects["GEO-shoulder.L"].get(paint.PART_PROP) == 1)
+    s.paint_turret_metal = 'GUNS'
     res = bpy.ops.robot.military_paint(remove_paint=True)
-    check("paint: removal restores the original links",
-          bsdf.inputs["Base Color"].links[0].from_node.name == src_before
+    after = {k: (bsdf.inputs[k].links[0].from_socket if bsdf.inputs[k].links else None,
+                 bsdf.inputs[k].default_value if not hasattr(bsdf.inputs[k].default_value, "__len__")
+                 else tuple(bsdf.inputs[k].default_value))
+             for k in before}
+    check("paint: removal restores links and values exactly", after == before
           and not any(n.name.startswith(paint.TAG) for n in mats[0].node_tree.nodes))
+    # legacy (v1.1/1.2) paint is removed too
+    nt = mats[0].node_tree
+    g = nt.nodes.new("ShaderNodeGroup")
+    g.name = paint.TAG
+    g.node_tree = bpy.data.node_groups.new(paint.LEGACY_GROUP, 'ShaderNodeTree')
+    g.node_tree.interface.new_socket("C", in_out='INPUT', socket_type='NodeSocketColor')
+    nt.links.new(before["Base Color"][0], g.inputs[0])
+    check("paint: legacy paint layer removed", paint.remove(mats[0]) and paint.TAG not in nt.nodes)
+
+
+@section
+def test_decals():
+    s = scene.robot_anim
+    clear_anim()
+    s.decal_set = 'FULL'
+    res = bpy.ops.robot.decals()
+    dec = [o for o in bpy.data.objects if o.get("robot_decal")]
+    check("decals: placed on the robot", res == {'FINISHED'} and len(dec) >= 18, f"{len(dec)} decals")
+    ok_parent = all(o.parent == rig and o.parent_type == 'BONE' and o.parent_bone in rig.data.bones for o in dec)
+    ok_wrap = all(o.modifiers and o.modifiers[0].type == 'SHRINKWRAP' and o.modifiers[0].target is not None for o in dec)
+    check("decals: follow their bone and hug the surface", ok_parent and ok_wrap)
+    img = bpy.data.images.get("Marquages_Robot_atlas")
+    check("decals: atlas loaded and packed", img is not None and img.packed_file is not None and img.size[0] == 2048)
+    # a decal stays on its part when the part moves
+    d = next(o for o in dec if o.parent_bone == "turret.L")
+    rel0 = bpy.data.objects["GEO-turret.L"].matrix_world.inverted() @ d.matrix_world.translation
+    R.RigPose(rig).set_turret("L", math.radians(20), math.radians(10), 0.0)
+    upd()
+    rel1 = bpy.data.objects["GEO-turret.L"].matrix_world.inverted() @ d.matrix_world.translation
+    check("decals: move with the turret", (rel1 - rel0).length < 1e-4, f"{(rel1 - rel0).length:.6f}")
+    R.RigPose(rig).reset()
+    upd()
+    s.decal_set = 'LIGHT'
+    bpy.ops.robot.decals()
+    n_light = len([o for o in bpy.data.objects if o.get("robot_decal")])
+    check("decals: light set replaces the full set", 4 <= n_light < len(dec), f"{n_light}")
+    bpy.ops.robot.decals(remove=True)
+    check("decals: removed", not any(o.get("robot_decal") for o in bpy.data.objects))
+
+
+@section
+def test_rocket_airburst_and_live():
+    clear_anim()
+    res = fx.launch_rocket(scene, rig, "R", 2, 300, max_range=50, seed=5)
+    check("rocket: explodes at the end of its range without any target", res["impact"] is not None and "blast" in res,
+          str(res["impact"]))
+    o, d = R.RigPose(rig).bone_world(R.rocket_port("R", 2))
+    imp = Vector(res["impact"])
+    lateral = (imp - o - d * (imp - o).dot(d)).length
+    check("rocket: flies straight (no drift)", lateral < 1.0, f"{lateral:.2f} m off the line")
+    plan = fx.plan_rocket(scene, rig, "L", 1, max_range=50, seed=2)
+    n0 = len(bpy.data.objects)
+    live = fx.LiveRocket(scene, plan)
+    pos = []
+    for t in (0.0, 0.2, 0.4):
+        live.update(t)
+        pos.append(live.rocket.location.copy())
+    births0 = list(live.births)
+    live.update(1.0)
+    b = [0.0] * len(births0)
+    live.smoke.data.attributes["birth"].data.foreach_get("value", b)
+    check("live rocket: flies without keyframes", (pos[2] - pos[0]).length > 5 and live.rocket.animation_data is None,
+          f"{(pos[2] - pos[0]).length:.1f} m")
+    check("live rocket: smoke ages in real time", abs((births0[0] - b[0]) - 1.0) < 1e-4)
+    check("live rocket: explosion visible after impact", not live.blast.hide_viewport)
+    alive = live.update(60.0)
+    live.remove()
+    check("live rocket: finishes and is removed", not alive and len(bpy.data.objects) == n0,
+          f"{len(bpy.data.objects)} vs {n0}")
+    fx.clear_fx(scene)
+
+
+def _key_count():
+    return sum(len(fc.keyframe_points) for fc in animdata.all_fcurves(rig))
+
+
+@section
+def test_cancel_modes():
+    s = scene.robot_anim
+    clear_anim()
+    scene.frame_set(1)
+    bpy.ops.robot.walk_preset()
+    n_before = _key_count()
+    end_before = scene.frame_end
+    # 1. path follow, then « undo last action »
+    scene.frame_set(500)
+    bpy.ops.robot.path_create(shape='LINE', length=12.0)
+    s.auto_max_seconds = 20
+    res = bpy.ops.robot.path_follow()
+    n_after = _key_count()
+    check("cancel: path follow wrote keys", res == {'FINISHED'} and n_after > n_before, f"{n_before} -> {n_after}")
+    check("cancel: undo button offered", history.last_label() == "Suivi du chemin")
+    res = bpy.ops.robot.undo_last()
+    check("cancel: undo last action restores the animation", res == {'FINISHED'} and _key_count() == n_before
+          and scene.frame_end == end_before, f"{_key_count()} keys")
+    check("cancel: no backup action left behind", not any(a.name.endswith(".annuler") for a in bpy.data.actions))
+    # 2. bake interrupted half-way (what Échap does in the modal operator)
+    snap = history.begin(rig, scene, "Suivi du chemin")
+    pts = autopilot.curve_points(rig, s.path_object)
+    gen = autopilot.bake_steps(bpy.context, rig, autopilot.FollowPath(pts, speed=1.0), 400)
+    for _ in range(10):
+        next(gen)
+    gen.close()
+    check("cancel: interrupted bake had written keys", _key_count() > n_before)
+    history.cancel(snap)
+    check("cancel: interrupted bake fully reverted", _key_count() == n_before, f"{_key_count()}")
+    bpy.data.objects.remove(s.path_object)
+    # 3. pilot take thrown away (Share / Suppr / « Annuler la prise »)
+    ctrl = pilot.PilotController(rig, s)
+    real_now = gamepad.now
+    gamepad.now = lambda: FakeClock.t
+    try:
+        scene.frame_set(800)
+        snap = history.begin(rig, scene, "Prise au pilotage")
+        rec = pilot.Recorder(rig, scene, s)
+        for i in range(90):
+            FakeClock.t += 1 / 60
+            ctrl.step(gamepad.PadState(ly=0.8, r2=1.0), 1 / 60)
+            rec.tick(ctrl)
+        rocket = fx.launch_rocket(scene, rig, "L", 1, 810, max_range=40, seed=1)["rocket"].name
+    finally:
+        gamepad.now = real_now
+    check("cancel: take recorded keys", _key_count() > n_before)
+    history.cancel(snap)
+    check("cancel: take thrown away, rockets of the take removed",
+          _key_count() == n_before and rocket not in bpy.data.objects, f"{_key_count()}")
+    ev, _r = ctrl.step(gamepad.PadState(buttons=frozenset({"share"})), 1 / 60)
+    check("cancel: Share button asks to cancel the take", "cancel_take" in ev)
+
+    class Ev:
+        def __init__(self, t, v):
+            self.type, self.value = t, v
+    kb = gamepad.KeyboardPad()
+    kb.event(Ev("DEL", 'PRESS'))
+    check("cancel: Suppr key = Share", "share" in kb.read().buttons)
+    check("cancel: operators registered", all(hasattr(bpy.ops.robot, n) for n in
+                                                ("undo_last", "bake_cancel", "pilot_request")))
+    clear_anim()
 
 
 @section
@@ -616,8 +775,10 @@ def test_ui_panels():
                 panel = type("P", (), {"layout": StubLayout(), "ROWS": getattr(cls, "ROWS", ())})()
                 cls.draw(panel, ctx)
                 pilot.STATUS.update(running=True, recording=True, monitor=True, monitor_text="a\nb")
+                autopilot.BAKE.update(running=True, label="Mode IA", progress=0.4)
                 cls.draw(panel, ctx)
                 pilot.STATUS.update(running=False, recording=False, monitor=False, monitor_text="")
+                autopilot.BAKE.update(running=False, label="", progress=0.0)
     check("UI panels reference valid props/operators", not StubLayout.errors, str(StubLayout.errors[:5]))
     prefs = addon.props.RobotAnimPreferences
     for k in ("backend", "device_index", "deadzone", "custom_mapping"):

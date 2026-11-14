@@ -6,7 +6,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty, P
 from bpy.types import AddonPreferences, PropertyGroup
 
 from . import rig as R
-from .paint import SCHEME_ITEMS
+from .paint import METAL_ITEMS, SCHEME_ITEMS
 from .presets import TURRET_PRESETS
 
 DEG = math.radians
@@ -72,7 +72,8 @@ class RobotAnimSettings(PropertyGroup):
     fx_flash: BoolProperty(name="Flashs de tir", default=True, description="Flash et lumière à la bouche des gatlings")
     rocket_count: IntProperty(name="Roquettes par tourelle", default=2, min=1, max=20)
     rocket_spacing: IntProperty(name="Intervalle (images)", default=6, min=1, max=200)
-    rocket_range: FloatProperty(name="Portée", default=120.0, min=10.0, max=2000.0, unit='LENGTH')
+    rocket_range: FloatProperty(name="Portée", default=60.0, min=10.0, max=2000.0, unit='LENGTH',
+                                 description="Sans impact avant cette distance, la roquette explose en l'air")
     rocket_smoke: FloatProperty(name="Densité de fumée", default=1.0, min=0.2, max=3.0)
     rocket_use_target: BoolProperty(name="Viser aim_target", default=False,
                                     description="Les roquettes se dirigent vers le contrôleur aim_target")
@@ -133,6 +134,15 @@ class RobotAnimSettings(PropertyGroup):
     paint_wear: FloatProperty(name="Usure", default=0.35, min=0.0, max=1.0, subtype='FACTOR')
     paint_scale: FloatProperty(name="Taille des taches", default=1.0, min=0.1, max=10.0)
     paint_seed: FloatProperty(name="Variation", default=0.0, min=0.0, max=100.0)
+    paint_grime: FloatProperty(name="Saleté", default=0.5, min=0.0, max=1.0, subtype='FACTOR',
+                               description="Crasse dans les creux et coulures verticales")
+    paint_turret_metal: EnumProperty(name="Métal nu", items=METAL_ITEMS, default='GUNS',
+                                     description="Pièces des tourelles laissées en métal nu (non peintes)")
+    decal_set: EnumProperty(name="Jeu de marquages", items=[
+        ('FULL', "Complet", "Numéros, insignes, avertissements, plaques techniques"),
+        ('LIGHT', "Discret", "Numéros et quelques plaques seulement")], default='FULL')
+    decal_number: EnumProperty(name="Numéro", items=[('num_07', "07", ""), ('num_12', "12", "")], default='num_07')
+    decal_wear: FloatProperty(name="Usure des marquages", default=0.3, min=0.0, max=1.0, subtype='FACTOR')
 
 
 AXIS_ITEMS = [(a, a, "") for a in ("X", "Y", "Z", "R", "U", "V")]

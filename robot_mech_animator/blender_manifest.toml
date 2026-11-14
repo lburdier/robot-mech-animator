@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "robot_mech_animator"
-version = "1.2.0"
+version = "1.3.0"
 name = "Robot Mech Animator"
 tagline = "Mech locomotion, PS4/keyboard pilot, navmesh AI and weapon FX"
 maintainer = "lburdier"
