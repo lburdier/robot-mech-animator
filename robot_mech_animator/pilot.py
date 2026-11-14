@@ -23,10 +23,11 @@ import bpy
 from bpy.types import Operator
 from mathutils import Vector
 
+from . import history
 from . import animdata, fx, gamepad, locomotion as LM, rig as R
 
 STATUS = {"running": False, "recording": False, "text": "", "pad": "", "frame": 0, "keys": 0, "selected": "L+R",
-          "monitor": False, "monitor_text": ""}
+          "monitor": False, "monitor_text": "", "request": ""}
 
 _approach = LM.approach
 
@@ -110,6 +111,8 @@ class PilotController:
             events.add("toggle_record")
         if "options" in pressed or "ps" in pressed:
             events.add("quit")
+        if "share" in pressed:
+            events.add("cancel_take")
         if "circle" in pressed:
             self.reset()
         if "r3" in pressed:
@@ -308,8 +311,11 @@ class ROBOT_OT_pilot(Operator):
         self.dz = deadzone_from_prefs(context)
         self.t_last = gamepad.now()
         self.flash_rng = random.Random(5)
-        self.warned_rocket = False
-        STATUS.update(running=True, recording=False, pad=msg, keys=0, text="Pilotage actif")
+        self.live = []
+        self.snap = None
+        for o in [o for o in bpy.data.objects if o.get("robot_fx_live")]:   # restes d'une session interrompue
+            bpy.data.objects.remove(o)
+        STATUS.update(running=True, recording=False, pad=msg, keys=0, text="Pilotage actif", request="")
         wm = context.window_manager
         self.timer = wm.event_timer_add(1.0 / 60.0, window=context.window)
         wm.modal_handler_add(self)
@@ -320,8 +326,22 @@ class ROBOT_OT_pilot(Operator):
 
     # -------------------------------------------------------------- recording
     def start_recording(self, context):
+        self.snap = history.begin(self.ctrl.rig, context.scene, "Prise au pilotage")
         self.rec = Recorder(self.ctrl.rig, context.scene, context.scene.robot_anim)
         STATUS.update(recording=True, keys=0)
+
+    def cancel_take(self, context):
+        """Share / Suppr / bouton « Annuler la prise » : the current take is thrown away."""
+        if not self.rec:
+            self.report({'INFO'}, "Aucune prise en cours (utilisez « Annuler la dernière action » pour la précédente)")
+            return
+        self.rec = None
+        STATUS.update(recording=False, keys=0)
+        history.cancel(self.snap)
+        self.snap = None
+        self.ctrl = PilotController(self.ctrl.rig, context.scene.robot_anim,
+                                    ground=ground_function(context, self.ctrl.rig))
+        self.report({'INFO'}, "Prise annulée : animation précédente restaurée")
 
     def stop_recording(self, context):
         if not self.rec:
@@ -330,24 +350,49 @@ class ROBOT_OT_pilot(Operator):
         n = self.rec.count
         self.rec = None
         STATUS.update(recording=False)
+        if self.snap is not None:
+            if f1 is not None:
+                history.commit(self.snap)
+            else:
+                self.snap.discard()
+            self.snap = None
         if f1 is not None:
             self.report({'INFO'}, f"Enregistré : images {f0}–{f1} ({n} poses, {removed} clés simplifiées)")
 
     def fire_rockets(self, context, rockets):
+        """Recording: rockets are keyframed in the timeline. Otherwise they fly live (no keys)."""
         s = context.scene.robot_anim
         rig = self.ctrl.rig
-        if not self.rec:
-            if not self.warned_rocket:
-                self.report({'INFO'}, "Roquettes : lancez l'enregistrement (Croix / R) pour les voir partir dans la timeline")
-                self.warned_rocket = True
-            return
         context.view_layer.update()
         target = None
         if s.rocket_use_target:
             target = rig.matrix_world @ rig.pose.bones[R.AIM].head
         for side, port in rockets:
-            fx.launch_rocket(context.scene, rig, side, port, context.scene.frame_current, target=target,
-                             max_range=s.rocket_range, seed=self.ctrl.rocket_count, smoke_density=s.rocket_smoke)
+            if self.rec:
+                fx.launch_rocket(context.scene, rig, side, port, context.scene.frame_current, target=target,
+                                 max_range=s.rocket_range, seed=self.ctrl.rocket_count, smoke_density=s.rocket_smoke)
+            else:
+                plan = fx.plan_rocket(context.scene, rig, side, port, target=target, max_range=s.rocket_range,
+                                      seed=self.ctrl.rocket_count, smoke_density=s.rocket_smoke,
+                                      salt=len(self.live) + int(gamepad.now() * 10))
+                self.live.append((fx.LiveRocket(context.scene, plan), gamepad.now()))
+
+    def update_live(self):
+        if not self.live:
+            return
+        t = gamepad.now()
+        keep = []
+        for rocket, t0 in self.live:
+            if rocket.update(t - t0):
+                keep.append((rocket, t0))
+            else:
+                rocket.remove()
+        self.live = keep
+
+    def clear_live(self):
+        for rocket, _t0 in self.live:
+            rocket.remove()
+        self.live = []
 
     # -------------------------------------------------------------- loop
     def modal(self, context, event):
@@ -363,6 +408,14 @@ class ROBOT_OT_pilot(Operator):
         state = self.pad.read() if self.pad else gamepad.PadState()
         state = gamepad.apply_deadzone(state, self.dz).merged(self.kb.read())
         events, rockets = self.ctrl.step(state, dt)
+        req, STATUS["request"] = STATUS["request"], ""
+        if req == 'STOP':
+            events.add("quit")
+        elif req == 'CANCEL_TAKE':
+            events.add("cancel_take")
+        if "cancel_take" in events:
+            self.cancel_take(context)
+            events.discard("toggle_record")
         if "toggle_record" in events:
             if self.rec:
                 self.stop_recording(context)
@@ -383,6 +436,7 @@ class ROBOT_OT_pilot(Operator):
                     fx.flash_state(obj, tr["flash"], self.flash_rng)
         if rockets:
             self.fire_rockets(context, rockets)
+        self.update_live()
         sel = "+".join(sorted(self.ctrl.selected))
         STATUS.update(selected=sel, text=(
             f"{'● REC' if self.rec else '○'}  tourelle(s) {sel}  vitesse {self.ctrl.speed:+.2f} m/s"
@@ -397,6 +451,7 @@ class ROBOT_OT_pilot(Operator):
 
     def finish(self, context):
         self.stop_recording(context)
+        self.clear_live()
         context.window_manager.event_timer_remove(self.timer)
         if self.pad:
             self.pad.close()
@@ -409,6 +464,22 @@ class ROBOT_OT_pilot(Operator):
 
     def cancel(self, context):
         self.finish(context)
+
+
+class ROBOT_OT_pilot_request(Operator):
+    """Arrêter le pilotage, ou annuler la prise en cours (l'animation d'avant est restaurée)"""
+    bl_idname = "robot.pilot_request"
+    bl_label = "Commande de pilotage"
+    action: bpy.props.EnumProperty(items=[('STOP', "Arrêter", "Quitter le pilotage (les prises terminées sont gardées)"),
+                                          ('CANCEL_TAKE', "Annuler la prise", "Jeter la prise en cours")])
+
+    @classmethod
+    def poll(cls, context):
+        return STATUS["running"]
+
+    def execute(self, context):
+        STATUS["request"] = self.action
+        return {'FINISHED'}
 
 
 class ROBOT_OT_pad_monitor(Operator):
@@ -464,4 +535,4 @@ class ROBOT_OT_detect_pads(Operator):
         return {'FINISHED'}
 
 
-classes = (ROBOT_OT_pilot, ROBOT_OT_pad_monitor, ROBOT_OT_detect_pads)
+classes = (ROBOT_OT_pilot, ROBOT_OT_pilot_request, ROBOT_OT_pad_monitor, ROBOT_OT_detect_pads)

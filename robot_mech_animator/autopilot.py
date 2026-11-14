@@ -5,6 +5,7 @@ and bake the result to keyframes, so a patrol looks exactly like a hand-piloted 
 """
 import math
 import random
+import time
 
 import bpy
 import numpy as np
@@ -12,7 +13,7 @@ from bpy.types import Operator
 from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
-from . import animdata, nav, rig as R
+from . import animdata, history, nav, rig as R
 from . import locomotion as LM
 from .pilot import make_locomotor
 
@@ -216,7 +217,19 @@ class Patrol(Behaviour):
 # =========================================================================== bake
 
 def bake(context, rig, behaviour, max_frames, ground=None, key_step=1, simplify=True, settle=True, start=None):
-    """Simulate frame by frame from the current frame and key the rig. Returns (f0, f1, removed)."""
+    """Simulate frame by frame from the current frame and key the rig. Returns (f0, f1, removed, loco)."""
+    gen = bake_steps(context, rig, behaviour, max_frames, ground, key_step, simplify, settle, start)
+    while True:
+        try:
+            next(gen)
+        except StopIteration as stop:
+            return stop.value
+
+
+def bake_steps(context, rig, behaviour, max_frames, ground=None, key_step=1, simplify=True, settle=True, start=None,
+               chunk=8):
+    """Generator version of :func:`bake`: yields (frames done, max frames) every ``chunk`` frames,
+    returns (f0, f1, removed, loco). Used by the modal (cancellable) operators."""
     scene = context.scene
     s = scene.robot_anim
     fps = scene.render.fps / scene.render.fps_base
@@ -252,6 +265,8 @@ def bake(context, rig, behaviour, max_frames, ground=None, key_step=1, simplify=
                 animdata.key_bones(cache, rig, frame, channels)
                 break
         k += 1
+        if k % chunk == 0:
+            yield k, max_frames
     cache.finish()
     removed = 0
     if simplify:
@@ -414,24 +429,117 @@ class ROBOT_OT_path_create(Operator):
         return {'FINISHED'}
 
 
-class ROBOT_OT_path_follow(Operator):
-    """Faire marcher le robot le long du chemin et enregistrer les clés à partir de l'image courante"""
+BAKE = {"running": False, "cancel": False, "label": "", "progress": 0.0}
+
+
+class _BakeModal:
+    """Runs a bake as a modal operator: progress in the header, Échap / clic droit / « Annuler » to stop.
+    Cancelling restores the animation as it was before."""
+    label = ""
+
+    def job(self, context):
+        """Return (behaviour, bake kwargs, report function) or raise ValueError(message)."""
+        raise NotImplementedError
+
+    def execute(self, context):            # scripts / redo: synchronous
+        try:
+            beh, kw, report = self.job(context)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        rig = kw.pop("rig")
+        snap = history.begin(rig, context.scene, self.label)
+        res = bake(context, rig, beh, **kw)
+        history.commit(snap)
+        self.report({'INFO'}, report(beh, *res))
+        return {'FINISHED'}
+
+    def invoke(self, context, event):
+        if BAKE["running"]:
+            self.report({'WARNING'}, "Un calcul est déjà en cours")
+            return {'CANCELLED'}
+        try:
+            self.beh, kw, self.report_fn = self.job(context)
+        except ValueError as exc:
+            self.report({'ERROR'}, str(exc))
+            return {'CANCELLED'}
+        rig = kw.pop("rig")
+        self.snap = history.begin(rig, context.scene, self.label)
+        self.gen = bake_steps(context, rig, self.beh, **kw)
+        BAKE.update(running=True, cancel=False, label=self.label, progress=0.0)
+        wm = context.window_manager
+        wm.progress_begin(0, 100)
+        self.timer = wm.event_timer_add(0.01, window=context.window)
+        wm.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def _end(self, context):
+        wm = context.window_manager
+        wm.event_timer_remove(self.timer)
+        wm.progress_end()
+        if context.area:
+            context.area.header_text_set(None)
+        BAKE.update(running=False, cancel=False, label="", progress=0.0)
+        _redraw(context)
+
+    def cancel_now(self, context):
+        self.gen.close()
+        self._end(context)
+        history.cancel(self.snap)
+        self.report({'INFO'}, f"{self.label} annulé : animation précédente restaurée")
+
+    def modal(self, context, event):
+        if BAKE["cancel"] or (event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS'):
+            self.cancel_now(context)
+            return {'CANCELLED'}
+        if event.type != 'TIMER':
+            return {'PASS_THROUGH'}
+        t_end = time.perf_counter() + 0.04
+        try:
+            while time.perf_counter() < t_end:
+                done, total = next(self.gen)
+                BAKE["progress"] = done / max(total, 1)
+        except StopIteration as stop:
+            self._end(context)
+            history.commit(self.snap)
+            self.report({'INFO'}, self.report_fn(self.beh, *stop.value))
+            return {'FINISHED'}
+        context.window_manager.progress_update(int(BAKE["progress"] * 100))
+        if context.area:
+            context.area.header_text_set(
+                f"{self.label} : {BAKE['progress'] * 100:.0f} %  –  Échap ou clic droit pour annuler")
+        _redraw(context)
+        return {'RUNNING_MODAL'}
+
+    def cancel(self, context):             # Blender closes the operator (file load, window closed…)
+        if BAKE["running"]:
+            self.cancel_now(context)
+
+
+def _redraw(context):
+    for area in context.screen.areas if context.screen else []:
+        if area.type in {'VIEW_3D', 'TIMELINE', 'DOPESHEET_EDITOR'}:
+            area.tag_redraw()
+
+
+class ROBOT_OT_path_follow(_BakeModal, Operator):
+    """Faire marcher le robot le long du chemin et enregistrer les clés à partir de l'image courante (Échap pour annuler)"""
     bl_idname = "robot.path_follow"
     bl_label = "Suivre le chemin"
     bl_options = {'REGISTER', 'UNDO'}
+    label = "Suivi du chemin"
 
     @classmethod
     def poll(cls, context):
         s = context.scene.robot_anim
         return _rig(context) is not None and s.path_object is not None and s.path_object.type == 'CURVE'
 
-    def execute(self, context):
+    def job(self, context):
         rig = _rig(context)
         s = context.scene.robot_anim
         pts = curve_points(rig, s.path_object)
         if len(pts) < 2:
-            self.report({'ERROR'}, "Chemin vide")
-            return {'CANCELLED'}
+            raise ValueError("Chemin vide")
         start = None
         if s.path_start_on_path:
             p0, p1 = Vector(pts[0]), Vector(pts[min(3, len(pts) - 1)])
@@ -439,11 +547,13 @@ class ROBOT_OT_path_follow(Operator):
         beh = FollowPath(pts, loop=s.path_loop, speed=s.auto_speed, sprint=s.auto_sprint, laps=s.path_laps)
         ground = ground_callback(rig, s.nav_object or s.ground_object)
         fps = context.scene.render.fps / context.scene.render.fps_base
-        f0, f1, removed, loco = bake(context, rig, beh, int(s.auto_max_seconds * fps), ground=ground,
-                                     key_step=s.walk_key_step, simplify=s.auto_simplify, start=start)
-        self.report({'INFO'}, f"Chemin suivi : images {f0}–{f1}, {loco.distance:.1f} m parcourus, "
-                              f"{sum(f.steps for f in loco.feet.values())} pas")
-        return {'FINISHED'}
+        kw = dict(rig=rig, max_frames=int(s.auto_max_seconds * fps), ground=ground, key_step=s.walk_key_step,
+                  simplify=s.auto_simplify, start=start)
+
+        def report(_beh, f0, f1, removed, loco):
+            return (f"Chemin suivi : images {f0}–{f1}, {loco.distance:.1f} m parcourus, "
+                    f"{sum(f.steps for f in loco.feet.values())} pas")
+        return beh, kw, report
 
 
 class ROBOT_OT_nav_build(Operator):
@@ -510,45 +620,60 @@ class ROBOT_OT_patrol_clear(Operator):
         return {'FINISHED'}
 
 
-class ROBOT_OT_ai_bake(Operator):
-    """Mode IA : le robot patrouille sur le navmesh (ou va vers une cible) et l'animation est enregistrée"""
+class ROBOT_OT_ai_bake(_BakeModal, Operator):
+    """Mode IA : le robot patrouille sur le navmesh (ou va vers une cible) et l'animation est enregistrée (Échap pour annuler)"""
     bl_idname = "robot.ai_bake"
     bl_label = "Lancer l'IA"
     bl_options = {'REGISTER', 'UNDO'}
+    label = "Mode IA"
 
     @classmethod
     def poll(cls, context):
         return _rig(context) is not None and context.scene.robot_anim.nav_object is not None
 
-    def execute(self, context):
+    def job(self, context):
         rig = _rig(context)
         s = context.scene.robot_anim
         navm = navmesh_from_object(rig, s.nav_object)
         mode = s.ai_mode
         if mode == 'GOTO':
             if s.ai_target is None:
-                self.report({'ERROR'}, "Choisissez une cible")
-                return {'CANCELLED'}
+                raise ValueError("Choisissez une cible")
             pts = [tuple(rig.matrix_world.inverted() @ s.ai_target.matrix_world.translation)]
         elif mode == 'WANDER':
             pts = []
         else:
             pts = patrol_points(rig, context.scene)
             if len(pts) < 2:
-                self.report({'ERROR'}, "Ajoutez au moins 2 points de patrouille (curseur 3D + « Ajouter un point »)")
-                return {'CANCELLED'}
+                raise ValueError("Ajoutez au moins 2 points de patrouille (curseur 3D + « Ajouter un point »)")
         beh = Patrol(navm, pts, mode=mode, wait=s.ai_wait, speed=s.auto_speed, sprint=s.auto_sprint,
                      laps=s.ai_laps if mode != 'WANDER' else s.ai_laps * 4, seed=s.ai_seed, scan=s.ai_scan)
         ground = ground_callback(rig, s.nav_object)
         fps = context.scene.render.fps / context.scene.render.fps_base
-        f0, f1, removed, loco = bake(context, rig, beh, int(s.auto_max_seconds * fps), ground=ground,
-                                     key_step=s.walk_key_step, simplify=s.auto_simplify)
-        extra = f" ({len(beh.failed)} point(s) inaccessible(s))" if beh.failed else ""
-        self.report({'INFO'}, f"IA : images {f0}–{f1}, {loco.distance:.1f} m, {beh.visited} point(s) visités{extra}")
+        kw = dict(rig=rig, max_frames=int(s.auto_max_seconds * fps), ground=ground, key_step=s.walk_key_step,
+                  simplify=s.auto_simplify)
+
+        def report(beh, f0, f1, removed, loco):
+            extra = f" ({len(beh.failed)} point(s) inaccessible(s))" if beh.failed else ""
+            return f"IA : images {f0}–{f1}, {loco.distance:.1f} m, {beh.visited} point(s) visités{extra}"
+        return beh, kw, report
+
+
+class ROBOT_OT_bake_cancel(Operator):
+    """Arrêter le calcul en cours (chemin ou IA) et remettre l'animation d'avant"""
+    bl_idname = "robot.bake_cancel"
+    bl_label = "Annuler le calcul"
+
+    @classmethod
+    def poll(cls, context):
+        return BAKE["running"]
+
+    def execute(self, context):
+        BAKE["cancel"] = True
         return {'FINISHED'}
 
 
 classes = (ROBOT_OT_path_create, ROBOT_OT_path_follow, ROBOT_OT_nav_build, ROBOT_OT_patrol_add,
-           ROBOT_OT_patrol_clear, ROBOT_OT_ai_bake)
+           ROBOT_OT_patrol_clear, ROBOT_OT_ai_bake, ROBOT_OT_bake_cancel)
 
 __all__ = ["Matrix"]

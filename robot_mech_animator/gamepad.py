@@ -339,7 +339,7 @@ class KeyboardPad:
         "UP_ARROW", "DOWN_ARROW", "LEFT_ARROW", "RIGHT_ARROW", "I", "J", "K", "L",
         "U", "O", "Y", "H", "NUMPAD_4", "NUMPAD_6", "NUMPAD_8", "NUMPAD_2",
         "SPACE", "F", "LEFT_SHIFT", "RIGHT_SHIFT", "LEFT_CTRL", "C", "LEFT_ALT", "E",
-        "R", "T", "BACK_SPACE", "V", "G"}
+        "R", "T", "BACK_SPACE", "V", "G", "DEL"}
 
     def __init__(self):
         self.down = set()
@@ -365,7 +365,7 @@ class KeyboardPad:
         strafe_mode = "LEFT_ALT" in d or "E" in d
         btn = set()
         for k, b in (("R", "cross"), ("BACK_SPACE", "circle"), ("T", "triangle"), ("V", "r3"),
-                     ("F", "r1"), ("G", "square")):
+                     ("F", "r1"), ("G", "square"), ("DEL", "share")):
             if k in d:
                 btn.add(b)
         return PadState(lx=0.0 if strafe_mode else side, ly=fwd,

@@ -17,7 +17,9 @@ Extension Blender (5.0 et plus) pour animer un robot mech bipède armé de deux 
   - **traînée de fumée volumétrique** ;
   - explosion à l'impact ;
 - **5 presets de tourelles**, plus une salve de roquettes, et un preset de marche ;
-- **une peinture militaire** posée sur les textures existantes : forêt, désert, urbain, olive ou hiver.
+- **une peinture militaire PBR** construite à partir des textures existantes : camouflage (forêt, désert, urbain, olive ou hiver) sur les panneaux, **canons en métal nu**, **visière noire brillante**, tiges de vérins chromées, usure et saleté ;
+- **des marquages (decals)** : numéros, insigne, « DANGER », « NO STEP », plaques techniques, bandes de danger, étiquettes de munitions ;
+- **tout est annulable** : chemin et IA (Échap), prise au pilotage (Share / Suppr), et un bouton « Annuler la dernière action ».
 
 > Le modèle 3D du robot n'est **pas** inclus dans ce dépôt, car c'est un modèle tiers.
 > Le script `tools/build_rig.py` construit le rig à partir de votre fichier `.blend`.
@@ -55,7 +57,7 @@ Dans ce cas, désinstallez d'abord la version installée depuis le disque, pour 
 blender -b --factory-startup --disable-autoexec "Rig robot.blend" \
         --python tools/build_rig.py -- "Robot_Rig.blend"
 # optionnel : peinture militaire (WOODLAND, DESERT, URBAN, OD, ARCTIC)
-blender -b Robot_Rig.blend --python tools/apply_paint.py -- WOODLAND "Robot_Rig_militaire.blend"
+blender -b Robot_Rig.blend --python tools/apply_paint.py -- WOODLAND "Robot_Rig_militaire.blend"   # + marquages (--no-decals pour les omettre)
 ```
 
 Le script :
@@ -108,6 +110,7 @@ Branchez la manette en USB ou appairez-la en Bluetooth, puis cliquez **Piloter l
 | L2 | s'accroupir | Ctrl ou C |
 | Triangle | tourelle gauche, droite ou les deux | T |
 | R3 | recentrer les tourelles | V |
+| **Share** | **annuler la prise en cours** | Suppr |
 | **Croix** | **démarrer ou arrêter l'enregistrement** | R |
 | Rond | pose de repos | Retour arrière |
 | Options / PS | quitter | Échap |
@@ -138,7 +141,23 @@ Panneau **Chemin et IA** :
   - **Salve de roquettes** : les roquettes partent des tubes, la flamme et la lumière du moteur s'allument, une traînée de fumée volumétrique se forme (dérive, montée, turbulence, dissipation) et une explosion se produit à l'impact sur le décor.
   - Rien n'est à précalculer : tout est en keyframes et en Geometry Nodes, visible en rendu EEVEE et Cycles.
   - **Effacer les effets** supprime les roquettes, les fumées et les explosions.
-- **Peinture militaire** : le camouflage est modulé par la luminosité des textures d'origine. La saleté, les arêtes et les voyants restent visibles, la peinture est mate, et une usure laisse réapparaître le métal par endroits. **Retirer** restaure les matériaux d'origine.
+- **Effets en pilotage** : sans enregistrement, les roquettes partent quand même, en direct (trajectoire, fumée et explosion animées en temps réel, puis supprimées). Pendant l'enregistrement, elles sont posées dans la timeline. Sans cible ni obstacle, une roquette explose en fin de portée (60 m par défaut).
+- **Peinture militaire PBR** (panneau **Peinture et marquages**) : un groupe de nœuds reprend la couleur, le métal, la rugosité et le vernis de chaque matériau.
+  - Les panneaux peints à l'origine reçoivent le camouflage, modulé par la luminosité des textures (détails, arêtes et voyants restent visibles).
+  - Les parties sombres deviennent du métal bronzé ; les gatlings et canons sont en **métal nu** (option : tourelles entières ou aucune).
+  - La **visière** est trouvée automatiquement et devient noire brillante, avec vernis ; les tiges de vérins sont chromées.
+  - **Usure** (rayures et éclats qui montrent l'acier) et **Saleté** (crasse dans les creux, coulures).
+  - **Retirer** restaure exactement les matériaux d'origine.
+- **Marquages** : **Poser les marquages** place 24 decals (jeu complet) ou quelques-uns (discret) sur les zones planes : numéro 07 ou 12, insigne, « DANGER – ROCKET EXHAUST AREA », « NO STEP », « MK-VII », plaque constructeur, « HYDRAULIC 3000 PSI », bandes de danger sur les volets des pieds, étiquettes de munitions et d'inspection. Chaque decal suit l'os de sa pièce et épouse la surface (Shrinkwrap) ; vous pouvez le déplacer à la main. L'atlas est empaqueté dans le .blend.
+
+## Annuler
+
+| Mode | Pendant | Après |
+|---|---|---|
+| Suivre le chemin / Lancer l'IA | barre de progression ; **Échap**, clic droit ou bouton **Annuler** : tout est remis comme avant | bouton **Annuler : …** en haut de l'onglet Robot |
+| Pilotage manette / clavier | **Share** / **Suppr** ou bouton **Annuler la prise** : la prise en cours est jetée ; bouton **Arrêter** pour quitter | bouton **Annuler : Prise au pilotage** |
+
+L'annulation restaure l'animation, la pose, la plage d'images et supprime les roquettes de la prise. Ctrl+Z de Blender fonctionne aussi.
 
 ## Tests
 
@@ -148,7 +167,7 @@ blender -b --factory-startup --disable-autoexec Robot_Rig.blend --python tests/t
 BLENDER_USER_RESOURCES=/tmp/profil blender -b --factory-startup --online-mode     --python tests/test_updater.py -- ancien.zip nouveau.zip
 ```
 
-Les 116 vérifications couvrent :
+Les 143 vérifications couvrent :
 
 - le rig : axe des gatlings, limites des tourelles, vérins, volet du pied ;
 - la marche et la locomotion : portée de l'IK, pieds sans glisse, rotation à 360°, sprint, pas de côté ;
@@ -156,7 +175,9 @@ Les 116 vérifications couvrent :
 - l'enregistrement ;
 - le clavier ;
 - le chemin, le navmesh et l'IA (contournement d'un mur, points visités) ;
-- la peinture et l'interface.
+- la peinture PBR (visière, métal nu, retrait exact), les marquages, l'interface ;
+- les roquettes en direct et l'explosion en fin de portée ;
+- l'annulation (chemin, calcul interrompu, prise au pilotage).
 
 Ces tests ont été passés sous Blender 5.0 et 5.3.
 
