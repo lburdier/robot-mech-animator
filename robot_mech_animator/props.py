@@ -157,6 +157,15 @@ class RobotAnimPreferences(AddonPreferences):
     axis_ry: EnumProperty(name="Stick D vertical", items=AXIS_ITEMS, default='R')
     axis_l2: EnumProperty(name="L2", items=AXIS_ITEMS, default='U')
     axis_r2: EnumProperty(name="R2", items=AXIS_ITEMS, default='V')
+    update_auto_check: BoolProperty(
+        name="Vérifier les mises à jour au démarrage", default=True,
+        description="Interroge GitHub au lancement de Blender (si l'accès en ligne est autorisé)")
+    update_auto_install: BoolProperty(
+        name="Installer automatiquement", default=False,
+        description="Télécharge, vérifie et installe la nouvelle version sans demander")
+    update_interval_hours: IntProperty(
+        name="Intervalle (heures)", default=24, min=0, max=24 * 30,
+        description="Délai minimum entre deux vérifications automatiques (0 = à chaque démarrage)")
 
     def draw(self, context):
         lay = self.layout
@@ -170,6 +179,16 @@ class RobotAnimPreferences(AddonPreferences):
             for k in ("lx", "ly", "rx", "ry", "l2", "r2"):
                 col.prop(self, "axis_" + k)
         lay.operator("robot.pad_monitor", icon='HIDE_OFF')
+        from . import updater
+        lay.separator()
+        lay.label(text="Mises à jour", icon='FILE_REFRESH')
+        col = lay.column()
+        col.prop(self, "update_auto_check")
+        sub = col.column()
+        sub.active = self.update_auto_check
+        sub.prop(self, "update_auto_install")
+        sub.prop(self, "update_interval_hours")
+        updater.draw_box(lay)
 
 
 classes = (RobotAnimSettings, RobotAnimPreferences)
