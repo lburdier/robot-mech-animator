@@ -1,14 +1,26 @@
 # Robot Mech Animator
 
-Extension Blender (5.0 et plus) pour animer un robot mech bipède avec deux tourelles :
+Extension Blender (5.0 et plus) pour animer un robot mech bipède armé de deux tourelles :
 
-- un **rig propre** : jambes en IK à trois segments, pieds et orteils, corps, torse, deux tourelles, gatlings et une cible de visée ;
-- un **preset de marche** procédural, en boucle infinie ou posé en clés sur la timeline ;
-- **5 presets de tourelles** : balayage, visée, rafale gatling, tir lourd et patrouille ;
-- le **pilotage en direct avec une manette PS4** (DualShock 4), avec **enregistrement des keyframes** en temps réel.
+- **un rig propre** :
+  - jambes en IK avec **vérins hydrauliques** qui coulissent ;
+  - pieds, orteils et **volet mécanique avant du pied** ;
+  - corps et **tête** (torse) ;
+  - épaules, tourelles et gatlings ;
+  - limites de rotation mesurées pour éviter toute collision ;
+- **une locomotion à pieds plantés** : le robot marche, sprinte, fait des pas de côté et **tourne sur place à 360°**, et ses jambes suivent sans glisser ;
+- **un pilotage en direct** à la **manette PS4** (DualShock 4) ou au **clavier** (AZERTY ou QWERTY), avec **enregistrement des keyframes** en temps réel ;
+- **un chemin prédéfini** à suivre, et **une IA sur navmesh** qui patrouille, fait des allers-retours, erre ou rejoint une cible ;
+- **des effets de tir** :
+  - flashs de bouche des gatlings ;
+  - **roquettes** avec flamme du moteur ;
+  - **traînée de fumée volumétrique** ;
+  - explosion à l'impact ;
+- **5 presets de tourelles**, plus une salve de roquettes, et un preset de marche ;
+- **une peinture militaire** posée sur les textures existantes : forêt, désert, urbain, olive ou hiver.
 
-> Le modèle 3D du robot n'est **pas** inclus dans ce dépôt (modèle tiers). Le script
-> `tools/build_rig.py` construit le rig à partir de votre fichier `.blend`.
+> Le modèle 3D du robot n'est **pas** inclus dans ce dépôt, car c'est un modèle tiers.
+> Le script `tools/build_rig.py` construit le rig à partir de votre fichier `.blend`.
 
 ---
 
@@ -23,14 +35,20 @@ Extension Blender (5.0 et plus) pour animer un robot mech bipède avec deux tour
 ```bash
 blender -b --factory-startup --disable-autoexec "Rig robot.blend" \
         --python tools/build_rig.py -- "Robot_Rig.blend"
+# optionnel : peinture militaire (WOODLAND, DESERT, URBAN, OD, ARCTIC)
+blender -b Robot_Rig.blend --python tools/apply_paint.py -- WOODLAND "Robot_Rig_militaire.blend"
 ```
 
 Le script :
 
 - supprime l'ancienne armature cassée et les 162 empties FBX vides ;
-- réaligne la jambe droite sur le miroir exact de la gauche ;
-- pose le robot au sol (z = 0) ;
-- crée l'armature `RIG_Robot` avec ses contraintes, ses formes de contrôleurs, ses collections d'os et ses couleurs.
+- réaligne la jambe droite sur le miroir exact de la gauche, et pose le robot au sol ;
+- **corrige l'axe de rotation des gatlings**, qui était incliné dans le mauvais sens : les canons « tournaient de travers » ;
+- découpe chaque bras en trois parties : moyeu fixé au torse, **épaule** (hausse) et **canon** (cap, hausse, recul) ;
+- **mesure sur la géométrie réelle** les angles atteignables sans collision, et les enregistre dans le rig ;
+- reprend les os proposés par la version « Rig robot (1) » : épaules, volets avant des pieds, chevilles ;
+- ajoute les **vérins des jambes** : la tige vise son ancrage pendant que le genou plie ;
+- ajoute les points d'émission des effets : bouches des gatlings et tubes lance-roquettes.
 
 ## Contrôleurs
 
@@ -38,48 +56,70 @@ Le script :
 |---|---|---|
 | `root` | position et orientation globales | loc, rot Z |
 | `body` | centre de gravité (hauteur, roulis, inclinaison) | loc, rot |
-| `torso` | rotation du torse (±75°) | rot |
-| `turret.L` / `turret.R` | **tourelles** : hausse (X), cap (Z), recul (loc Y) | rot X/Z, loc Y |
-| `gatling.L` / `gatling.R` | rotation des canons | rot Y |
-| `aim_target` | cible : réglez le curseur « Suivi de la cible » (0→1) pour que les tourelles la visent | loc |
-| `foot_ik.L` / `foot_ik.R` | pieds en IK | loc, rot |
-| `knee_pole.L` / `knee_pole.R` | orientation des genoux | loc |
+| `torso` | **tête** : tourner (±58°) et incliner (±12°) | rot |
+| `shoulder.L` / `.R` | épaule : hausse (+24° / −20°) | rot X |
+| `turret.L` / `.R` | canon : hausse (+20° / −35°), cap (34° vers l'intérieur, 18° vers l'extérieur), recul | rot X/Z, loc Y |
+| `gatling.L` / `.R` | rotation des canons | rot Y |
+| `aim_target` | cible, avec le curseur « Suivi de la cible » | loc |
+| `foot_ik.L` / `.R` | pieds en IK | loc, rot |
+| `knee_pole.L` / `.R` | orientation des genoux | loc |
 | `toe_front.*` / `toe_back.*` | orteils | rot X |
+| `toe_flap.L` / `.R` | volet mécanique avant du pied | rot X |
 
-Les rotations des tourelles sont limitées (cap ±28°, hausse −22°/+40°, recul 0–0,3 m) par des contraintes qui s'appliquent aussi pendant la manipulation.
+Ce qui est automatique :
 
-## Presets
+- les **vérins** (`piston_rod.*`) suivent les genoux ;
+- `muzzle.*` et `rocket_port_1/2.*` servent aux effets ;
+- tous ces os sont rangés dans le calque masqué « Mecanique ».
 
-- **Marche** : longueur et hauteur de pas, appui au sol, rebond, balancement, roulis, contre-rotation du torse, bascule des pieds, flexion des orteils, sur place, marche arrière, démarrage et arrêt progressifs.
-- **Tourelles** (gauche, droite ou les deux), insérés à la frame courante :
-  - *Balayage* ;
-  - *Visée* (avec dépassement puis stabilisation) ;
-  - *Rafale gatling* (montée en régime, recul, vibrations) ;
-  - *Tir lourd* ;
-  - *Patrouille* (aléatoire, avec une graine).
+## Pilotage : manette PS4 ou clavier
 
-## Pilotage à la manette PS4
-
-Branchez la manette en USB ou appairez-la en Bluetooth, puis cliquez **Piloter le robot**. Aucun logiciel tiers n'est nécessaire sous Windows : l'addon lit la manette via WinMM/DirectInput. Si vous utilisez DS4Windows ou Steam Input, choisissez **XInput** dans les préférences. Sous Linux et macOS, le pilote `pygame` est expérimental.
+Branchez la manette en USB ou appairez-la en Bluetooth, puis cliquez **Piloter le robot**. Sous Windows, aucun logiciel tiers n'est nécessaire : l'addon lit la manette via WinMM/DirectInput. Si vous utilisez DS4Windows ou Steam Input, choisissez **XInput** dans les préférences. Le clavier fonctionne seul ou en même temps que la manette.
 
 | Manette | Action | Clavier |
 |---|---|---|
-| Stick gauche | marcher / tourner | Flèches |
-| Stick droit | viser avec la ou les tourelles sélectionnées | I J K L |
-| R2 (analogique) | tirer : rotation des gatlings et recul | Espace |
-| L2 (analogique) | s'accroupir | C |
-| L1 / R1 / Triangle | tourelle gauche / droite / les deux | T |
-| Croix directionnelle ← → | rotation du torse | |
-| Croix directionnelle ↑ ↓ | hauteur du corps | |
-| **Croix** | **démarrer / arrêter l'enregistrement** | R |
+| Stick gauche | marcher, tourner (sur place : 360°) | Z/W S, Q/A D |
+| **L3 (clic)** | **sprint** | Maj |
+| Carré + stick gauche | pas de côté | Alt ou E + Q/D |
+| Stick droit | viser avec la ou les tourelles | Flèches ou I J K L |
+| L1 + stick droit | tourner la tête | U O, Y H |
+| Croix directionnelle | tête : tourner ← →, incliner ↑ ↓ | pavé 4 6 8 2 |
+| R2 | tir gatling : rotation, recul et **flash** | Espace |
+| R1 | **roquette** (maintenu : salve) | F |
+| L2 | s'accroupir | Ctrl ou C |
+| Triangle | tourelle gauche, droite ou les deux | T |
+| R3 | recentrer les tourelles | V |
+| **Croix** | **démarrer ou arrêter l'enregistrement** | R |
 | Rond | pose de repos | Retour arrière |
-| Carré | marche sur place | G |
-| L3 / R3 | course / recentrer les tourelles | F / V |
 | Options / PS | quitter | Échap |
 
-Pendant l'enregistrement, une pose est inscrite à chaque image, au rythme réel de la scène (réglable : une clé toutes les N images, ralenti). À l'arrêt, les clés redondantes sont supprimées avec une tolérance garantie.
+Pendant l'enregistrement, une pose est inscrite à chaque image, au rythme réel de la scène. Les flashs de tir sont enregistrés avec elle, et les roquettes partent dans la timeline. À l'arrêt, les clés redondantes sont supprimées avec une tolérance garantie.
 
-Pour vérifier le mappage, utilisez le bouton **Tester la manette**, qui affiche en direct les axes et les boutons. Les axes sont réassignables dans les préférences de l'extension.
+## Chemin et IA (navmesh)
+
+Panneau **Chemin et IA** :
+
+1. **Chemin prédéfini** :
+   - cliquez **En S**, **Boucle** ou **Ligne** pour créer une courbe devant le robot ;
+   - modifiez-la (Tab) ;
+   - cliquez **Suivre le chemin** : le robot la suit en marchant, avec les clés posées à partir de l'image courante.
+2. **Navmesh** :
+   - choisissez le **Sol** et une collection d'**Obstacles** ;
+   - cliquez **Créer le navmesh** : une grille praticable est créée, qui exclut les pentes trop fortes et les obstacles, élargis du rayon du robot.
+   - Vous pouvez aussi utiliser votre propre maillage comme navmesh.
+3. **IA** :
+   - placez des points de patrouille (curseur 3D, puis **Ajouter un point**) ;
+   - choisissez un comportement : *patrouille en boucle*, *aller-retour*, *errance* ou *aller à la cible* ;
+   - cliquez **Lancer l'IA**.
+   - Le robot calcule son chemin (A* et lissage), contourne les obstacles, s'arrête à chaque point et observe en tournant la tête et les tourelles.
+
+## Effets et peinture
+
+- **Effets de tir** :
+  - **Salve de roquettes** : les roquettes partent des tubes, la flamme et la lumière du moteur s'allument, une traînée de fumée volumétrique se forme (dérive, montée, turbulence, dissipation) et une explosion se produit à l'impact sur le décor.
+  - Rien n'est à précalculer : tout est en keyframes et en Geometry Nodes, visible en rendu EEVEE et Cycles.
+  - **Effacer les effets** supprime les roquettes, les fumées et les explosions.
+- **Peinture militaire** : le camouflage est modulé par la luminosité des textures d'origine. La saleté, les arêtes et les voyants restent visibles, la peinture est mate, et une usure laisse réapparaître le métal par endroits. **Retirer** restaure les matériaux d'origine.
 
 ## Tests
 
@@ -87,14 +127,15 @@ Pour vérifier le mappage, utilisez le bouton **Tester la manette**, qui affiche
 blender -b --factory-startup --disable-autoexec Robot_Rig.blend --python tests/test_addon.py
 ```
 
-Les 56 vérifications couvrent :
+Les 116 vérifications couvrent :
 
-- le sens des tourelles et le respect de leurs limites ;
-- la portée de l'IK et l'absence de pieds qui glissent ou passent sous le sol ;
-- l'avancée du root ;
-- les 5 presets × 3 côtés ;
-- le pilotage simulé et l'enregistrement en temps réel ;
-- les pilotes de manette et l'interface.
+- le rig : axe des gatlings, limites des tourelles, vérins, volet du pied ;
+- la marche et la locomotion : portée de l'IK, pieds sans glisse, rotation à 360°, sprint, pas de côté ;
+- la tête, les tirs et les roquettes ;
+- l'enregistrement ;
+- le clavier ;
+- le chemin, le navmesh et l'IA (contournement d'un mur, points visités) ;
+- la peinture et l'interface.
 
 Ces tests ont été passés sous Blender 5.0 et 5.3.
 

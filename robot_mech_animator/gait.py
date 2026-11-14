@@ -23,6 +23,7 @@ class GaitParams:
     turret_sway: float = math.radians(2.5)
     foot_pitch: float = math.radians(14.0)
     toe_flex: float = math.radians(20.0)
+    flap: float = math.radians(32.0)       # front foot flap folds back in the air, bounces on landing
     # the rest pose has almost straight legs (150 deg): bend them while walking and
     # centre the stride under the hips, otherwise the front foot is out of IK reach
     crouch: float = 0.18         # body lowered while walking (m)
@@ -58,6 +59,17 @@ def foot_curve(q, p: GaitParams):
     return dy, dz, toe_up, curl, back
 
 
+def flap_curve(q, p: GaitParams):
+    """Front flap angle: folds back during the swing, damped bounce after landing."""
+    q %= 1.0
+    if q >= p.duty:
+        s = (q - p.duty) / (1.0 - p.duty)
+        return -p.flap * math.sin(math.pi * s)
+    # stance: the cycle wraps, so landing happens at q = 0
+    tau = q / max(p.duty, 1e-3) * 6.0
+    return p.flap * 0.35 * math.exp(-tau * 0.9) * math.sin(tau * 2.6)
+
+
 def sample(phase, p: GaitParams, amp=1.0, direction=1.0):
     """Full-body pose for a cycle phase in [0, 1).
 
@@ -71,6 +83,7 @@ def sample(phase, p: GaitParams, amp=1.0, direction=1.0):
         dy, dz, toe_up, curl, back = foot_curve(phase + off, p)
         # walking forward = towards -Y, so the stance slide goes to +Y (dy > 0 at the back)
         out["foot." + side] = ((0.0, (dy * d + p.foot_back) * amp, dz * amp), toe_up * amp, curl * amp, back * amp)
+        out["flap." + side] = flap_curve(phase + off, p) * amp
     duty_mid = p.duty / 2.0
     c = math.cos(2.0 * math.pi * (phase - duty_mid))        # +1 when the left foot carries the weight
     bob = -p.bob * (0.5 + 0.5 * math.cos(4.0 * math.pi * phase))
@@ -91,6 +104,8 @@ def apply(pose, data, extra_crouch=0.0, torso_yaw=None, turrets=True):
         off, toe_up, curl, back = data["foot." + side]
         pose.set_foot(side, off, toe_up=toe_up)
         pose.set_toes(side, front_curl=-curl * 0.5 + max(0.0, toe_up) * 0.3, back_lift=back)
+        if "flap." + side in data and hasattr(pose, "set_flap"):
+            pose.set_flap(side, data["flap." + side])
     (bx, by, bz), pitch, roll, yaw = data["body"]
     pose.set_body((bx, by, bz - extra_crouch), pitch=pitch, roll=roll, yaw=yaw)
     pose.set_torso(yaw=data["torso_yaw"] if torso_yaw is None else torso_yaw + data["torso_yaw"])

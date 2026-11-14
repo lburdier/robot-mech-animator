@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "robot_mech_animator"
-version = "1.0.0"
+version = "1.1.0"
 name = "Robot Mech Animator"
-tagline = "Walk cycle, turret presets and PS4 gamepad piloting for a mech"
+tagline = "Mech locomotion, PS4/keyboard pilot, navmesh AI and weapon FX"
 maintainer = "lburdier"
 type = "add-on"
 website = "https://github.com/lburdier/robot-mech-animator"

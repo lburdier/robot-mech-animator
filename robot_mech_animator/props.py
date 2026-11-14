@@ -6,6 +6,7 @@ from bpy.props import (BoolProperty, EnumProperty, FloatProperty, IntProperty, P
 from bpy.types import AddonPreferences, PropertyGroup
 
 from . import rig as R
+from .paint import SCHEME_ITEMS
 from .presets import TURRET_PRESETS
 
 DEG = math.radians
@@ -42,6 +43,8 @@ class RobotAnimSettings(PropertyGroup):
                                       description="Ajouter un léger balancement des tourelles pendant la marche")
     walk_foot_pitch: FloatProperty(name="Bascule du pied", default=DEG(14), min=0, max=DEG(45), subtype='ANGLE')
     walk_toe_flex: FloatProperty(name="Flexion des orteils", default=DEG(20), min=0, max=DEG(45), subtype='ANGLE')
+    walk_flap: FloatProperty(name="Volet avant du pied", default=DEG(32), min=0, max=DEG(55), subtype='ANGLE',
+                             description="La plaque mécanique à l'avant du pied se replie en l'air et rebondit à l'appui")
     walk_crouch: FloatProperty(name="Flexion des jambes", default=0.18, min=0.0, max=1.0, unit='LENGTH',
                                description="Abaisse le corps pendant la marche pour que les pieds restent à portée de l'IK")
     walk_foot_back: FloatProperty(name="Recentrage des pas", default=0.25, min=-0.5, max=0.8, unit='LENGTH',
@@ -56,20 +59,32 @@ class RobotAnimSettings(PropertyGroup):
                               default='BOTH')
     turret_preset: EnumProperty(name="Preset", items=TURRET_PRESETS, default='SWEEP')
     turret_duration: IntProperty(name="Durée (images)", default=96, min=4, max=2000)
-    turret_amplitude: FloatProperty(name="Amplitude (°)", default=24.0, min=0.0, max=R.TURRET_YAW)
+    turret_amplitude: FloatProperty(name="Amplitude (°)", default=16.0, min=0.0, max=34.0)
     turret_cycles: IntProperty(name="Répétitions", default=2, min=1, max=20)
-    turret_aim_yaw: FloatProperty(name="Cap cible (°)", default=15.0, min=-R.TURRET_YAW, max=R.TURRET_YAW,
-                                  description="Positif = vers la droite du robot")
-    turret_aim_pitch: FloatProperty(name="Hausse cible (°)", default=18.0, min=-R.TURRET_PITCH_DOWN, max=R.TURRET_PITCH_UP,
-                                    description="Positif = vers le haut")
+    turret_aim_yaw: FloatProperty(name="Cap cible (°)", default=12.0, min=-34.0, max=34.0,
+                                  description="Positif = vers la droite du robot (limité par le rig)")
+    turret_aim_pitch: FloatProperty(name="Hausse cible (°)", default=18.0, min=-55.0, max=44.0,
+                                    description="Positif = vers le haut (épaule + canon, limité par le rig)")
     turret_spin_rps: FloatProperty(name="Rotation gatling (tours/s)", default=6.0, min=0.0, max=50.0)
     turret_seed: IntProperty(name="Graine aléatoire", default=7, min=0)
 
+    # ---------------------------------------------------------------- effects
+    fx_flash: BoolProperty(name="Flashs de tir", default=True, description="Flash et lumière à la bouche des gatlings")
+    rocket_count: IntProperty(name="Roquettes par tourelle", default=2, min=1, max=20)
+    rocket_spacing: IntProperty(name="Intervalle (images)", default=6, min=1, max=200)
+    rocket_range: FloatProperty(name="Portée", default=120.0, min=10.0, max=2000.0, unit='LENGTH')
+    rocket_smoke: FloatProperty(name="Densité de fumée", default=1.0, min=0.2, max=3.0)
+    rocket_use_target: BoolProperty(name="Viser aim_target", default=False,
+                                    description="Les roquettes se dirigent vers le contrôleur aim_target")
+    rocket_interval: FloatProperty(name="Cadence (R1 maintenu)", default=0.35, min=0.1, max=3.0, unit='TIME_ABSOLUTE')
+
     # ---------------------------------------------------------------- pilot
-    pilot_walk_speed: FloatProperty(name="Vitesse de marche", default=1.0, min=0.1, max=2.0, subtype='FACTOR')
-    pilot_turn_speed: FloatProperty(name="Vitesse de rotation (°/s)", default=45.0, min=1.0, max=360.0)
+    pilot_walk_speed: FloatProperty(name="Sensibilité du stick", default=1.0, min=0.1, max=2.0, subtype='FACTOR')
+    loco_walk_speed: FloatProperty(name="Vitesse de marche", default=1.15, min=0.2, max=3.0, unit='VELOCITY')
+    loco_sprint_speed: FloatProperty(name="Vitesse de sprint", default=2.5, min=0.5, max=5.0, unit='VELOCITY')
+    pilot_turn_speed: FloatProperty(name="Vitesse de rotation (°/s)", default=55.0, min=1.0, max=180.0)
     pilot_aim_speed: FloatProperty(name="Vitesse de visée (°/s)", default=70.0, min=1.0, max=500.0)
-    pilot_torso_speed: FloatProperty(name="Vitesse du torse (°/s)", default=40.0, min=1.0, max=360.0)
+    pilot_torso_speed: FloatProperty(name="Vitesse de la tête (°/s)", default=50.0, min=1.0, max=360.0)
     pilot_aim_mode: EnumProperty(name="Visée", items=[
         ('RATE', "Vitesse", "Le stick fait tourner la tourelle ; elle reste en place quand on le lâche"),
         ('ABSOLUTE', "Absolue", "La position du stick donne directement l'angle de la tourelle")], default='RATE')
@@ -83,6 +98,41 @@ class RobotAnimSettings(PropertyGroup):
     pilot_simplify_tol: FloatProperty(name="Tolérance", default=0.002, min=0.0, max=0.1, precision=4)
     pilot_extend_range: BoolProperty(name="Étendre la plage de la scène", default=True)
     pilot_record_on_start: BoolProperty(name="Enregistrer dès le lancement", default=False)
+
+    # ---------------------------------------------------------------- autopilot
+    path_object: PointerProperty(name="Chemin", type=bpy.types.Object, poll=lambda self, o: o.type == 'CURVE')
+    path_loop: BoolProperty(name="Boucler", default=False)
+    path_laps: IntProperty(name="Tours", default=1, min=1, max=50)
+    path_start_on_path: BoolProperty(name="Partir du début du chemin", default=True)
+    auto_speed: FloatProperty(name="Allure", default=1.0, min=0.1, max=1.0, subtype='FACTOR')
+    auto_sprint: BoolProperty(name="Sprint", default=False)
+    auto_max_seconds: FloatProperty(name="Durée max (s)", default=90.0, min=1.0, max=3600.0)
+    auto_simplify: BoolProperty(name="Simplifier les clés", default=True)
+    ground_object: PointerProperty(name="Sol", type=bpy.types.Object, poll=lambda self, o: o.type == 'MESH',
+                                   description="Surface sur laquelle le robot marche (relief)")
+    obstacles: PointerProperty(name="Obstacles", type=bpy.types.Collection,
+                               description="Collection d'objets à contourner")
+    nav_object: PointerProperty(name="Navmesh", type=bpy.types.Object, poll=lambda self, o: o.type == 'MESH')
+    nav_cell: FloatProperty(name="Taille des cellules", default=0.75, min=0.1, max=5.0, unit='LENGTH')
+    nav_radius: FloatProperty(name="Rayon du robot", default=1.8, min=0.2, max=6.0, unit='LENGTH')
+    nav_slope: FloatProperty(name="Pente max (°)", default=30.0, min=1.0, max=60.0)
+    ai_mode: EnumProperty(name="Comportement", items=[
+        ('LOOP', "Patrouille en boucle", "P01 → P02 → … → P01"),
+        ('PINGPONG', "Aller-retour", "P01 → … → dernier point → … → P01"),
+        ('WANDER', "Errance", "Points aléatoires sur le navmesh"),
+        ('GOTO', "Aller à la cible", "Rejoindre un objet par le plus court chemin")], default='LOOP')
+    ai_target: PointerProperty(name="Cible", type=bpy.types.Object)
+    ai_wait: FloatProperty(name="Pause à chaque point (s)", default=3.0, min=0.0, max=60.0)
+    ai_laps: IntProperty(name="Tours", default=1, min=1, max=50)
+    ai_scan: BoolProperty(name="Observer (tête et tourelles)", default=True)
+    ai_seed: IntProperty(name="Graine", default=1, min=0)
+
+    # ---------------------------------------------------------------- paint
+    paint_scheme: EnumProperty(name="Camouflage", items=SCHEME_ITEMS, default='WOODLAND')
+    paint_strength: FloatProperty(name="Couvrance", default=0.9, min=0.0, max=1.0, subtype='FACTOR')
+    paint_wear: FloatProperty(name="Usure", default=0.35, min=0.0, max=1.0, subtype='FACTOR')
+    paint_scale: FloatProperty(name="Taille des taches", default=1.0, min=0.1, max=10.0)
+    paint_seed: FloatProperty(name="Variation", default=0.0, min=0.0, max=100.0)
 
 
 AXIS_ITEMS = [(a, a, "") for a in ("X", "Y", "Z", "R", "U", "V")]
