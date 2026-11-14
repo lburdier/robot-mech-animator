@@ -4,18 +4,18 @@
 bl_info = {
     "name": "Robot Mech Animator",
     "author": "lburdier",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (5, 0, 0),
     "location": "Vue 3D > Barre latérale (N) > Robot",
-    "description": "Anime le robot mech : cycle de marche, presets de tourelles, pilotage manette PS4 avec enregistrement de clés",
+    "description": "Anime le robot mech : marche à pieds plantés, pilotage manette PS4 / clavier, chemin et IA navmesh, tirs et roquettes, peinture militaire",
     "category": "Animation",
 }
 
 import bpy
 
-from . import pilot, presets, props, ui
+from . import autopilot, paint, pilot, presets, props, ui
 
-_modules = (presets, props, pilot, ui)
+_modules = (presets, paint, props, pilot, autopilot, ui)
 
 
 def register():

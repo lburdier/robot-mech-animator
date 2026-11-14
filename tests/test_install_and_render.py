@@ -15,6 +15,12 @@ sc.frame_set(1)
 print("WALK", bpy.ops.robot.walk_preset())
 sc.robot_anim.turret_preset = 'SWEEP'
 print("TURRET", bpy.ops.robot.turret_preset(kind='SETTINGS'))
+sc.frame_set(120)
+print("ROCKETS", bpy.ops.robot.turret_preset(kind='ROCKETS'))
+print("PAINT", bpy.ops.robot.military_paint())
+sc.frame_set(300)
+print("PATH", bpy.ops.robot.path_create(shape='S'), bpy.ops.robot.path_follow())
+sc.frame_set(1)
 sc.render.engine = 'BLENDER_WORKBENCH'
 sc.display.shading.color_type = 'MATERIAL'
 sc.display.shading.light = 'STUDIO'

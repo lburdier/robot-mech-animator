@@ -33,6 +33,11 @@ class PadState:
     connected: bool = False
     name: str = ""
     raw: str = ""
+    # extra axes only produced by the keyboard
+    hx: float = 0.0     # head (torso) yaw, right = +1
+    hy: float = 0.0     # head pitch, up = +1
+    sx: float = 0.0     # strafe, right = +1
+    sprint: bool = False
 
     def merged(self, other):
         """Combine two states (gamepad + keyboard)."""
@@ -41,7 +46,9 @@ class PadState:
         return PadState(pick(self.lx, other.lx), pick(self.ly, other.ly), pick(self.rx, other.rx),
                         pick(self.ry, other.ry), max(self.l2, other.l2), max(self.r2, other.r2),
                         self.buttons | other.buttons, self.connected or other.connected,
-                        self.name or other.name, self.raw or other.raw)
+                        self.name or other.name, self.raw or other.raw,
+                        pick(self.hx, other.hx), pick(self.hy, other.hy), pick(self.sx, other.sx),
+                        self.sprint or other.sprint)
 
 
 def deadzone(v, dz):
@@ -323,10 +330,16 @@ def open_pad(backend="AUTO", index=-1, mapping=None, buttons=None):
 
 
 class KeyboardPad:
-    """Virtual pad driven by the keyboard (fallback, also usable with a pad)."""
+    """Virtual pad driven by the keyboard (works alone or together with a pad).
 
-    KEYS = {"UP_ARROW", "DOWN_ARROW", "LEFT_ARROW", "RIGHT_ARROW", "I", "J", "K", "L", "SPACE", "C",
-            "R", "T", "BACK_SPACE", "G", "F", "V"}
+    Both QWERTY (WASD) and AZERTY (ZQSD) layouts are accepted."""
+
+    MOVE = {"Z": "fwd", "W": "fwd", "S": "back", "Q": "left", "A": "left", "D": "right"}
+    KEYS = set(MOVE) | {
+        "UP_ARROW", "DOWN_ARROW", "LEFT_ARROW", "RIGHT_ARROW", "I", "J", "K", "L",
+        "U", "O", "Y", "H", "NUMPAD_4", "NUMPAD_6", "NUMPAD_8", "NUMPAD_2",
+        "SPACE", "F", "LEFT_SHIFT", "RIGHT_SHIFT", "LEFT_CTRL", "C", "LEFT_ALT", "E",
+        "R", "T", "BACK_SPACE", "V", "G"}
 
     def __init__(self):
         self.down = set()
@@ -344,15 +357,24 @@ class KeyboardPad:
         d = self.down
 
         def axis(neg, pos):
-            return (1.0 if pos in d else 0.0) - (1.0 if neg in d else 0.0)
+            n = any(k in d for k in neg)
+            p = any(k in d for k in pos)
+            return (1.0 if p else 0.0) - (1.0 if n else 0.0)
+        fwd = axis(("S",), ("Z", "W"))
+        side = axis(("Q", "A"), ("D",))
+        strafe_mode = "LEFT_ALT" in d or "E" in d
         btn = set()
-        for k, b in (("R", "cross"), ("BACK_SPACE", "circle"), ("T", "triangle"), ("G", "square"),
-                     ("F", "l3"), ("V", "r3")):
+        for k, b in (("R", "cross"), ("BACK_SPACE", "circle"), ("T", "triangle"), ("V", "r3"),
+                     ("F", "r1"), ("G", "square")):
             if k in d:
                 btn.add(b)
-        return PadState(lx=axis("LEFT_ARROW", "RIGHT_ARROW"), ly=axis("DOWN_ARROW", "UP_ARROW"),
-                        rx=axis("J", "L"), ry=axis("K", "I"), l2=1.0 if "C" in d else 0.0,
-                        r2=1.0 if "SPACE" in d else 0.0, buttons=frozenset(btn), connected=bool(d))
+        return PadState(lx=0.0 if strafe_mode else side, ly=fwd,
+                        rx=axis(("LEFT_ARROW", "J"), ("RIGHT_ARROW", "L")),
+                        ry=axis(("DOWN_ARROW", "K"), ("UP_ARROW", "I")),
+                        l2=1.0 if ("LEFT_CTRL" in d or "C" in d) else 0.0,
+                        r2=1.0 if "SPACE" in d else 0.0, buttons=frozenset(btn), connected=bool(d),
+                        hx=axis(("U", "NUMPAD_4"), ("O", "NUMPAD_6")), hy=axis(("H", "NUMPAD_2"), ("Y", "NUMPAD_8")),
+                        sx=side if strafe_mode else 0.0, sprint=("LEFT_SHIFT" in d or "RIGHT_SHIFT" in d))
 
 
 def now():

@@ -10,3 +10,4 @@ tools/inspect_*.py
 tools/probe_api.py
 tools/render_closeups.py
 tools/render_knee.py
+tools/scratch/

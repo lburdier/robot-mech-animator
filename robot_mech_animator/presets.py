@@ -5,7 +5,7 @@ import random
 import bpy
 from bpy.types import Operator
 
-from . import animdata, gait, rig as R
+from . import animdata, fx, gait, rig as R
 
 DEG = math.radians
 
@@ -16,7 +16,7 @@ def gait_params(s):
         bob=s.walk_bob, sway=s.walk_sway, roll=s.walk_roll, lean=s.walk_lean,
         hip_yaw=s.walk_hip_yaw, torso_twist=s.walk_torso_twist,
         turret_sway=s.walk_turret_sway, foot_pitch=s.walk_foot_pitch, toe_flex=s.walk_toe_flex,
-        crouch=s.walk_crouch, foot_back=s.walk_foot_back,
+        crouch=s.walk_crouch, foot_back=s.walk_foot_back, flap=s.walk_flap,
     )
 
 
@@ -125,6 +125,21 @@ def _sides(s):
     return ["L", "R"] if s.turret_side == 'BOTH' else [s.turret_side]
 
 
+def rocket_frames(s, n, side):
+    """Frame offsets of the rockets fired by one turret in the ROCKETS preset."""
+    sides = _sides(s)
+    per = max(1, s.rocket_count)
+    out = []
+    k = 0
+    for i in range(per * len(sides)):
+        if sides[i % len(sides)] == side:
+            f = i * s.rocket_spacing
+            if f <= n:
+                out.append(f)
+        k += 1
+    return out
+
+
 def turret_track(kind, s, side, base, n, fps, rng):
     """Yield (frame_offset, yaw, pitch, recoil, spin_angle) for one turret."""
     yaw0, pitch0, _rec0, spin0 = base
@@ -176,6 +191,14 @@ def turret_track(kind, s, side, base, n, fps, rng):
             rec = 0.26 * w
             pitch = pitch0 + DEG(7) * w
             out.append((i, yaw0 + DEG(1.2) * w * (1 if side == "L" else -1), pitch, rec, spin0))
+    elif kind == 'ROCKETS':
+        shots = rocket_frames(s, n, side)
+        for i in range(n + 1):
+            rec = 0.0
+            for f in shots:
+                if 0 <= i - f < 10:
+                    rec = max(rec, 0.14 * math.exp(-(i - f) / 3.0))
+            out.append((i, yaw0, pitch0 + DEG(1.5) * rec / 0.14, rec, spin0))
     elif kind == 'SCAN':
         hops = max(2, s.turret_cycles * 2)
         targets = [(yaw0, pitch0)]
@@ -198,6 +221,7 @@ TURRET_PRESETS = [
     ('BURST', "Rafale gatling", "Montée en régime des gatlings, tir avec recul et vibrations"),
     ('SHOT', "Tir lourd", "Un coup puissant : recul fort puis retour amorti"),
     ('SCAN', "Patrouille", "Regarde autour de lui de façon aléatoire"),
+    ('ROCKETS', "Salve de roquettes", "Tire des roquettes (flamme, traînée de fumée, explosion à l'impact)"),
 ]
 
 
@@ -249,10 +273,31 @@ class ROBOT_OT_turret_preset(Operator):
         if kind in ('AIM', 'SWEEP', 'SCAN'):
             simp = animdata.bone_fcurves(rig, bones)
             animdata.simplify(simp, tol_loc=0.0005, tol_rot=0.0015)
+        extra = ""
+        if kind in ('BURST', 'SHOT') and s.fx_flash:
+            for side in sides:
+                if kind == 'BURST':
+                    shots = {f0 + i for i, (_k, _y, _p, rec, _a) in enumerate(tracks[side]) if rec > 0.02}
+                    fx.key_flash_track(rig, side, scene, shots, f0, f0 + n, seed=s.turret_seed + len(side), size=1.0)
+                else:
+                    fx.key_flash_track(rig, side, scene, {f0 + 1, f0 + 2}, f0, f0 + 6, seed=s.turret_seed, size=2.2)
+            extra = ", flashs de tir"
+        if kind == 'ROCKETS':
+            made = 0
+            target = None
+            for side in sides:
+                for j, off in enumerate(rocket_frames(s, n, side)):
+                    scene.frame_set(f0 + off)
+                    if s.rocket_use_target:
+                        target = rig.matrix_world @ rig.pose.bones[R.AIM].head
+                    fx.launch_rocket(scene, rig, side, 1 + j % 2, f0 + off, target=target, max_range=s.rocket_range,
+                                     seed=s.turret_seed + made, smoke_density=s.rocket_smoke)
+                    made += 1
+            extra = f", {made} roquette(s)"
         scene.frame_end = max(scene.frame_end, f0 + n)
         scene.frame_set(f0)
         label = dict((k, l) for k, l, _d in TURRET_PRESETS)[kind]
-        self.report({'INFO'}, f"Preset « {label} » ajouté ({', '.join(sides)}) images {f0}–{f0 + n}")
+        self.report({'INFO'}, f"Preset « {label} » ajouté ({', '.join(sides)}) images {f0}–{f0 + n}{extra}")
         return {'FINISHED'}
 
 
@@ -275,7 +320,7 @@ class ROBOT_OT_reset_pose(Operator):
         bones = {
             'ALL': [b for b in R.CONTROLLERS if b != R.ROOT],
             'TURRETS': [b for s in R.SIDES for b in R.TURRET_BONES[s]],
-            'LEGS': [R.BODY] + [f(s) for s in R.SIDES for f in (R.foot, R.pole, R.toe_front, R.toe_back)],
+            'LEGS': R.LEG_BONES,
         }[self.target]
         R.RigPose(rig).reset(bones)
         return {'FINISHED'}
@@ -317,7 +362,7 @@ class ROBOT_OT_select_group(Operator):
         names = {
             'BODY': [R.ROOT, R.BODY, R.TORSO],
             'TURRETS': [R.AIM] + [b for s in R.SIDES for b in R.TURRET_BONES[s]],
-            'LEGS': [f(s) for s in R.SIDES for f in (R.foot, R.pole, R.toe_front, R.toe_back)],
+            'LEGS': [f(s) for s in R.SIDES for f in (R.foot, R.pole, R.toe_front, R.toe_back, R.toe_flap)],
             'ALL': R.CONTROLLERS,
         }[self.group]
         if context.mode != 'POSE':
@@ -338,4 +383,16 @@ class ROBOT_OT_select_group(Operator):
         return {'FINISHED'}
 
 
-classes = (ROBOT_OT_walk_preset, ROBOT_OT_turret_preset, ROBOT_OT_reset_pose, ROBOT_OT_key_pose, ROBOT_OT_select_group)
+class ROBOT_OT_fx_clear(Operator):
+    """Supprimer les roquettes, fumées et explosions générées"""
+    bl_idname = "robot.fx_clear"
+    bl_label = "Effacer les effets"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        n = fx.clear_fx(context.scene)
+        self.report({'INFO'}, f"{n} objet(s) d'effet supprimé(s)")
+        return {'FINISHED'}
+
+
+classes = (ROBOT_OT_fx_clear, ROBOT_OT_walk_preset, ROBOT_OT_turret_preset, ROBOT_OT_reset_pose, ROBOT_OT_key_pose, ROBOT_OT_select_group)
