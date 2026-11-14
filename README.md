@@ -47,6 +47,8 @@ Autre méthode, entièrement gérée par Blender : dans **Préférences › Get 
 https://github.com/lburdier/robot-mech-animator/releases/latest/download/index.json
 ```
 
+Dans ce cas, désinstallez d'abord la version installée depuis le disque, pour qu'il n'y ait pas deux copies actives.
+
 ## Construire le rig
 
 ```bash

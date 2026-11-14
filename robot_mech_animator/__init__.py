@@ -31,7 +31,11 @@ def unregister():
         pilot.STATUS["running"] = False
     pilot.STATUS["monitor"] = False
     updater.unregister()
-    del bpy.types.Scene.robot_anim
+    if hasattr(bpy.types.Scene, "robot_anim"):
+        del bpy.types.Scene.robot_anim
     for m in reversed(_modules):
         for c in reversed(m.classes):
-            bpy.utils.unregister_class(c)
+            try:
+                bpy.utils.unregister_class(c)
+            except RuntimeError:  # déjà retirée (deux copies de l'addon actives)
+                pass
